@@ -1,0 +1,5 @@
+{
+  "name": "YouTube Channel Stats Analyzer",
+  "description": "An application that prepares dedicated channel statistics and published materials on a YouTube channel, enhanced with AI-powered analysis from Gemini.",
+  "requestFramePermissions": []
+}
