@@ -1,52 +1,5 @@
-// This tells TypeScript that these variables are loaded globally from the <script> tags in index.html
-declare const jspdf: any;
-declare const html2canvas: any;
-
-/**
- * Exports the content of a given HTML element to a PDF file.
- * @param elementId The ID of the HTML element to export.
- * @param channelName The name of the channel for the filename.
- */
-export const exportToPdf = async (elementId: string, channelName: string) => {
-    const { jsPDF } = jspdf;
-    const element = document.getElementById(elementId);
-    if (!element) {
-        console.error(`Element with id "${elementId}" not found.`);
-        return;
-    }
-
-    try {
-        const canvas = await html2canvas(element, {
-            backgroundColor: '#1a1a1a', // Corresponds to wnet-dark
-            scale: 2, // Higher scale for better quality
-        });
-        const imgData = canvas.toDataURL('image/png');
-        
-        // A4 dimensions in points: 595.28 x 841.89
-        const pdf = new jsPDF({
-            orientation: 'portrait',
-            unit: 'pt',
-            format: 'a4'
-        });
-        
-        const pdfWidth = pdf.internal.pageSize.getWidth();
-        const pdfHeight = pdf.internal.pageSize.getHeight();
-        const imgWidth = canvas.width;
-        const imgHeight = canvas.height;
-        const ratio = imgWidth / imgHeight;
-        
-        const contentWidth = pdfWidth - 40; // with some margin
-        const contentHeight = contentWidth / ratio;
-
-        pdf.addImage(imgData, 'PNG', 20, 20, contentWidth, contentHeight);
-
-        const fileName = `analiza_${channelName.replace(/ /g, '_')}.pdf`;
-        pdf.save(fileName);
-
-    } catch (error) {
-        console.error("Error generating PDF:", error);
-    }
-};
+import type { AnalyzedVideo, Channel } from "../types";
+import { formatNumber } from "../utils";
 
 /**
  * Opens a new browser tab with the formatted analysis content, ready to be copied to Google Docs.
@@ -91,18 +44,133 @@ export const exportToGoogleDocs = (elementId: string, channelName: string) => {
     }
 };
 
-/**
- * Copies the analysis (in Markdown format) to the clipboard for pasting into Slack.
- * @param markdownContent The raw markdown string of the summary.
- */
-export const sendToSlack = (markdownContent: string) => {
-    if (!navigator.clipboard) {
-        console.error("Clipboard API not available.");
-        return;
-    }
-    navigator.clipboard.writeText(markdownContent).then(() => {
-        console.log("Copied to clipboard for Slack!");
-    }).catch(err => {
-        console.error("Failed to copy text for Slack:", err);
+interface ExportChannel {
+    channelData: Channel;
+    channelAnalysis?: {
+        summary: string;
+        lectorSummary?: string;
+    };
+    videoAnalyses: AnalyzedVideo[];
+}
+
+const renderMarkdownToHTML = (text: string) => {
+    let html = text
+        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*(.*?)\*/g, '<em>$1</em>');
+    html = html.replace(/^(#+)\s(.*$)/gm, (match, hashes, content) => {
+        const level = hashes.length;
+        if (level <= 2) return `<h${level + 2}>${content}</h${level + 2}>`;
+        return `<h4}>${content}</h4>`;
     });
+    html = html.replace(/^- (.*$)/gm, '<li>$1</li>');
+    html = html.replace(/(<li>.*<\/li>)/gs, '<ul>$1</ul>').replace(/<\/ul>\s?<ul>/g, '');
+    html = html.split(/\n\s*\n/).map(p => {
+        if (p.trim().startsWith('<h') || p.trim().startsWith('<ul')) return p;
+        if (p.trim() === '') return '';
+        return `<p>${p.replace(/\n/g, '<br />')}</p>`;
+    }).join('');
+    return html;
+};
+
+
+export const exportAnalysesToHTML = (
+    analyses: ExportChannel[],
+    allChannels: Channel[]
+) => {
+
+    const channelDetailsMap = new Map(allChannels.map(c => [c.id, c.snippet]));
+
+    const bodyContent = analyses.map(analysis => {
+        let channelHtml = `<div class="channel-section">
+            <h1 class="channel-title">${analysis.channelData.snippet.title}</h1>`;
+
+        if (analysis.channelAnalysis) {
+            channelHtml += '<h2>Analiza Kanału</h2>';
+            if (analysis.channelAnalysis.lectorSummary) {
+                channelHtml += `<div class="lector-summary">
+                    <h3>Streszczenie dla Lektora</h3>
+                    <p><em>${analysis.channelAnalysis.lectorSummary}</em></p>
+                </div>`;
+            }
+            channelHtml += `<div class="analysis-content">${renderMarkdownToHTML(analysis.channelAnalysis.summary)}</div>`;
+        }
+
+        if (analysis.videoAnalyses.length > 0) {
+            channelHtml += '<h2 class="video-section-title">Analizy Materiałów Wideo</h2>';
+            analysis.videoAnalyses.forEach(videoAnalysis => {
+                const video = videoAnalysis.video;
+                channelHtml += `<div class="video-analysis">
+                    <h3>${video.snippet.title}</h3>
+                    <p class="video-meta">Opublikowano: ${new Date(video.snippet.publishedAt).toLocaleString('pl-PL')}</p>
+                    `;
+                 if (videoAnalysis.lectorSummary) {
+                    channelHtml += `<div class="lector-summary video-lector-summary">
+                        <h4>Streszczenie dla Lektora</h4>
+                        <p><em>${videoAnalysis.lectorSummary}</em></p>
+                    </div>`;
+                }
+                channelHtml += `<div class="analysis-content">${renderMarkdownToHTML(videoAnalysis.summary)}</div>`;
+                
+                if (videoAnalysis.comments.length > 0) {
+                    channelHtml += `<div class="comments-section">
+                        <h4>Najpopularniejsze Komentarze</h4>`;
+                    videoAnalysis.comments.forEach(commentThread => {
+                        const comment = commentThread.snippet.topLevelComment.snippet;
+                        channelHtml += `<div class="comment">
+                            <p class="comment-author">${comment.authorDisplayName} (👍 ${formatNumber(comment.likeCount)})</p>
+                            <p class="comment-text">${comment.textDisplay}</p>
+                        </div>`;
+                    });
+                    channelHtml += `</div>`;
+                }
+                channelHtml += `</div>`;
+            });
+        }
+
+        channelHtml += '</div>';
+        return channelHtml;
+    }).join('');
+
+
+    const html = `
+        <!DOCTYPE html>
+        <html lang="pl">
+        <head>
+            <meta charset="UTF-8">
+            <title>Eksport Analiz YouTube</title>
+            <style>
+                body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #e0e0e0; background-color: #1a1a1a; max-width: 900px; margin: 2rem auto; padding: 2rem; }
+                .channel-section { margin-bottom: 4rem; padding-bottom: 2rem; border-bottom: 2px solid #444; }
+                .channel-section:last-child { border-bottom: none; }
+                .channel-title { font-size: 2.5rem; color: #FFAF2D; margin-bottom: 1.5rem; border-bottom: 1px solid #FFAF2D; padding-bottom: 0.5rem; }
+                h2 { font-size: 1.8rem; color: #eee; margin-top: 2.5rem; margin-bottom: 1rem; }
+                h3 { font-size: 1.4rem; color: #87CEEB; margin-top: 2rem; margin-bottom: 0.5rem; }
+                h4 { font-size: 1.1rem; color: #87CEEB; margin-top: 1rem; margin-bottom: 0.5rem; }
+                .analysis-content { background-color: #262626; padding: 1.5rem; border-radius: 8px; border: 1px solid #333; }
+                p { margin-bottom: 1rem; }
+                strong { color: #FFAF2D; }
+                ul { list-style-type: '◆ '; padding-left: 20px; }
+                li { margin-bottom: 0.5rem; }
+                .lector-summary { background-color: #2c2c2c; border-left: 4px solid #FFAF2D; padding: 1rem 1.5rem; margin: 1.5rem 0; border-radius: 4px; }
+                .video-lector-summary h4 { color: #ddd; }
+                .video-analysis { margin-bottom: 2.5rem; padding-left: 1.5rem; border-left: 3px solid #555; }
+                .video-meta { font-size: 0.9rem; color: #aaa; font-style: italic; }
+                .comments-section { margin-top: 1.5rem; background-color: #222; padding: 1rem; border-radius: 6px; }
+                .comment { border-bottom: 1px solid #444; padding: 0.8rem 0; }
+                .comment:last-child { border-bottom: none; }
+                .comment-author { font-weight: bold; color: #ccc; font-size: 0.9rem; }
+                .comment-text { color: #ddd; margin-top: 0.3rem; }
+            </style>
+        </head>
+        <body>
+            ${bodyContent}
+        </body>
+        </html>
+    `;
+
+    const newWindow = window.open('', '_blank');
+    if (newWindow) {
+        newWindow.document.write(html);
+        newWindow.document.close();
+    }
 };

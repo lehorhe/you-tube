@@ -1,361 +1,291 @@
 import { GoogleGenAI } from "@google/genai";
-import type { Channel, Video, CommentThread } from "../types";
+import type { Channel, Video, CommentThread } from '../types';
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
+// FIX: Initialize the GoogleGenAI client according to the guidelines.
+// The API key must be obtained exclusively from the environment variable `process.env.API_KEY`.
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
-type VideoCollection = { longForm: Video[], shorts: Video[], liveStreams: Video[] };
-
-const formatVideoList = (videos: Video[], count: number, recent = false): string => {
-    if (videos.length === 0) return "Brak filmów w tej kategorii w wybranym zakresie.";
-
-    const sortedVideos = recent
-        ? [...videos].sort((a, b) => new Date(b.snippet.publishedAt).getTime() - new Date(a.snippet.publishedAt).getTime())
-        : videos; 
-
-    return sortedVideos
-        .slice(0, count)
-        .map(video => `- "${video.snippet.title}" z ${parseInt(video.statistics.viewCount).toLocaleString()} wyświetleniami.`)
+const formatVideosForPrompt = (videos: Video[]) => {
+    if (videos.length === 0) return 'Brak filmów w tym okresie.';
+    // Limit to top 20 most popular videos to keep the prompt concise and within token limits.
+    return videos
+        .slice(0, 20)
+        .map(v => `- "${v.snippet.title}" (Wyświetlenia: ${v.statistics.viewCount}, Polubienia: ${v.statistics.likeCount}, Komentarze: ${v.statistics.commentCount})`)
         .join('\n');
 };
 
-const calculateAverage = (items: Video[]): string => {
-    if (items.length === 0) return '0';
-    const totalViews = items.reduce((sum, video) => sum + parseInt(video.statistics.viewCount), 0);
-    return Math.round(totalViews / items.length).toLocaleString();
-};
-
-const formatChannelDataForPrompt = (
-    channel: Channel,
-    videos: VideoCollection
-): string => {
-    const { longForm, shorts, liveStreams } = videos;
-    return `
-- Nazwa: ${channel.snippet.title}
-- Opis Kanału: ${channel.snippet.description}
-- Data Założenia: ${new Date(channel.snippet.publishedAt).toLocaleDateString('pl-PL')}
-- Subskrybenci: ${parseInt(channel.statistics.subscriberCount).toLocaleString()}
-- Łączne Wyświetlenia: ${parseInt(channel.statistics.viewCount).toLocaleString()}
-- Łączna Liczba Filmów (VOD): ${parseInt(channel.statistics.videoCount).toLocaleString()}
-
-**Dane o Wynikach Treści (Content Performance Data):**
-
-*Filmy Długometrażowe (Long-Form Videos):*
-- Łączna liczba w zakresie dat: ${longForm.length}
-- Średnia wyświetleń: ${calculateAverage(longForm)}
-- Najpopularniejsze filmy (Top Performing):
-${formatVideoList(longForm, 5)}
-- Ostatnie filmy (Recent):
-${formatVideoList(longForm, 5, true)}
-
-*Shorts:*
-- Łączna liczba w zakresie dat: ${shorts.length}
-- Średnia wyświetleń: ${calculateAverage(shorts)}
-- Najpopularniejsze Shorts (Top Performing):
-${formatVideoList(shorts, 5)}
-
-*Transmisje na Żywo (Live Streams):*
-- Łączna liczba w zakresie dat: ${liveStreams.length}
-- Średnia wyświetleń (powtórek): ${calculateAverage(liveStreams)}
-- Najpopularniejsze transmisje (Top Performing):
-${formatVideoList(liveStreams, 5)}
-`;
-};
-
+/**
+ * Generates a comprehensive summary for a YouTube channel, either standalone or in comparison to a competitor.
+ */
 export const generateChannelSummary = async (
-    channel: Channel, 
-    videos: VideoCollection,
+    mainChannel: Channel,
+    mainVideos: { longForm: Video[], shorts: Video[], liveStreams: Video[] },
     competitorChannel?: Channel,
-    competitorVideos?: VideoCollection
+    competitorVideos?: { longForm: Video[], shorts: Video[], liveStreams: Video[] }
 ): Promise<string> => {
-    const model = 'gemini-2.5-flash';
-    let prompt: string;
-
+    let prompt = '';
+    const allMainVideos = [...mainVideos.longForm, ...mainVideos.shorts, ...mainVideos.liveStreams];
+    
     if (competitorChannel && competitorVideos) {
-        // Comparative Analysis Prompt
+        // Comparative analysis prompt
+        const allCompetitorVideos = [...competitorVideos.longForm, ...competitorVideos.shorts, ...competitorVideos.liveStreams];
         prompt = `
-Jesteś głównym strategiem ds. treści wideo i analitykiem w multimedialnej organizacji informacyjnej Radio Wnet. Twoim zadaniem jest przygotowanie analizy porównawczej (benchmarku) kanału Radio Wnet względem kluczowego konkurenta na rynku. Raport jest przeznaczony dla zespołu YouTube (Lech, Konrad, Ksenia, Łukasz, Kaśka) na ich środowe kolegium.
+Jesteś ekspertem od analizy kanałów YouTube dla polskiego medium informacyjnego Radio Wnet. Twoim zadaniem jest przeprowadzenie szczegółowej analizy porównawczej kanału Radio Wnet z kanałem konkurencyjnym. Analiza powinna być napisana w języku polskim, w profesjonalnym, ale przystępnym tonie, używając formatowania Markdown.
 
-Raport musi być wnikliwy, strategiczny i napisany przystępnym językiem. Celem jest wyciągnięcie konkretnych wniosków i lekcji dla Radia Wnet z analizy działań konkurenta.
+**Kanał Główny (Radio Wnet):**
+- Nazwa: ${mainChannel.snippet.title}
+- Subskrybenci: ${mainChannel.statistics.subscriberCount}
+- Łączna liczba filmów: ${mainChannel.statistics.videoCount}
+- Łączna liczba wyświetleń: ${mainChannel.statistics.viewCount}
 
-Przeanalizuj poniższe, rozbudowane dane obu kanałów i przedstaw zwięzłe, kompleksowe podsumowanie w dobrze sformatowanym Markdown. Skup się na strategiach, które Radio Wnet może zaadaptować lub których powinno unikać.
+**Najpopularniejsze materiały kanału Radio Wnet w analizowanym okresie:**
+${formatVideosForPrompt(allMainVideos)}
 
-Podsumowanie powinno zawierać:
+**Kanał Konkurencyjny:**
+- Nazwa: ${competitorChannel.snippet.title}
+- Subskrybenci: ${competitorChannel.statistics.subscriberCount}
+- Łączna liczba filmów: ${competitorChannel.statistics.videoCount}
+- Łączna liczba wyświetleń: ${competitorChannel.statistics.viewCount}
 
-**🎯 Podsumowanie i Główne Wnioski (Executive Summary):**
-*   Kto "wygrał" analizowany okres pod względem kluczowych wskaźników (wyświetlenia, dynamika)? Jaka jest główna różnica w strategiach obu kanałów, widoczna w danych?
-*   Jaka jest jedna, kluczowa lekcja dla Radia Wnet płynąca z analizy konkurenta w tym okresie?
+**Najpopularniejsze materiały kanału Konkurencyjnego w analizowanym okresie:**
+${formatVideosForPrompt(allCompetitorVideos)}
 
-**📊 Porównanie Strategii Treści (Content Strategy Benchmark):**
-*   **Filmy Długometrażowe:** Porównaj najpopularniejsze materiały obu kanałów. Jakie tematy/formaty przyniosły sukces konkurentowi? Czy są to tematy, które Radio Wnet pominęło? Jaki jest stosunek treści newsowych do evergreen u konkurencji w porównaniu do Radia Wnet?
-*   **Shorts:** Jaką strategię Shorts stosuje konkurent? (np. szybkie newsy, fragmenty wywiadów, viralowe trendy). Jak efektywna jest w porównaniu do strategii Radia Wnet? Co możemy zaadaptować?
-*   **Transmisje na Żywo:** Porównaj wyniki i formaty transmisji. Czy konkurent organizuje dedykowane wydarzenia live, które angażują widownię inaczej niż retransmisje Radia Wnet?
+**Twoje zadania:**
 
-**📈 Analiza Tematów i Zaangażowania:**
-*   Zidentyfikuj filary tematyczne, które przyniosły konkurentowi największy sukces. Czy pokrywają się one z tematyką Radia Wnet, czy też konkurent odkrył nową, angażującą niszę?
-*   Gdzie widać większe zaangażowanie (komentarze, lajki w stosunku do wyświetleń) i dlaczego?
+1.  **Podsumowanie i Kluczowe Wnioski (Executive Summary):** Rozpocznij od zwięzłego podsumowania (2-3 zdania), które wskazuje na główne różnice i podobieństwa oraz najważniejszy wniosek z porównania.
+2.  **Analiza Mocnych Stron Konkurenta:** Zidentyfikuj i opisz 3-4 kluczowe mocne strony kanału konkurencyjnego. Co robią lepiej lub inaczej niż Radio Wnet? Analizuj tematykę, formaty, częstotliwość publikacji, tytuły, miniatury (na podstawie tytułów) i zaangażowanie.
+3.  **Analiza Słabych Stron Konkurenta:** Wskaż 2-3 potencjalne słabości lub obszary do poprawy u konkurenta. Gdzie Radio Wnet ma przewagę?
+4.  **Rekomendacje dla Radia Wnet:** Na podstawie analizy, sformułuj 3-5 konkretnych, praktycznych rekomendacji dla kanału Radio Wnet. Co Radio Wnet może zaadaptować, czego unikać, a co robić, aby zwiększyć swoją konkurencyjność? Rekomendacje powinny być umotywowane danymi i obserwacjami.
+5.  **Potencjalne Zagrożenia i Szanse:** Zidentyfikuj jedno kluczowe zagrożenie ze strony konkurenta i jedną największą szansę dla Radia Wnet, która wyłania się z tego porównania.
 
-**💡 Lekcje i Rekomendacje dla Radia Wnet (Actionable Insights):**
-*   Na podstawie analizy, wymień 2-3 konkretne, strategiczne możliwości dla Radia Wnet. (np. "Konkurent odniósł sukces formatem 'X', powinniśmy przetestować naszą wersję", "Ich podejście do tytułów generuje wyższy CTR, przeanalizujmy je").
-*   Zaproponuj 3 konkretne pomysły na treści dla Radia Wnet, inspirowane sukcesami konkurenta, ale dostosowane do profilu i misji Radia Wnet.
-    *   1 pomysł na film długometrażowy.
-    *   1 pomysł na serię Shorts.
-    *   1 pomysł na ulepszenie/nowy format transmisji na żywo.
-
-**🔗 Wnioski do Koordynacji (Dla Adama, Filipa, Kuby):**
-*   Które elementy strategii konkurenta powinny być przedyskutowane na kolegium koordynacyjnym w kontekście Portalu i social mediów? Czy ich treści wideo są lepiej zintegrowane z innymi platformami?
-
----
-**DANE KANAŁU ANALIZOWANEGO (RADIO WNET):**
-${formatChannelDataForPrompt(channel, videos)}
----
-**DANE KANAŁU PORÓWNAWCZEGO (BENCHMARK):**
-${formatChannelDataForPrompt(competitorChannel, competitorVideos)}
----
-
-Proszę, rozpocznij analizę porównawczą na potrzeby kolegium.
+**Formatowanie:** Użyj Markdown. Stosuj nagłówki (np. ##), pogrubienia (**), listy punktowane (-) dla przejrzystości.
 `;
     } else {
-        // Original Single Channel Analysis Prompt
+        // Single channel analysis prompt
         prompt = `
-Jesteś głównym strategiem ds. treści wideo i analitykiem w multimedialnej organizacji informacyjnej Radio Wnet. Twoim zadaniem jest przygotowanie cotygodniowego raportu analitycznego dla zespołu YouTube (Lech, Konrad, Ksenia, Łukasz, Kaśka) na ich środowe kolegium.
+Jesteś ekspertem od analizy kanałów YouTube dla polskiego medium informacyjnego Radio Wnet. Twoim zadaniem jest przeprowadzenie szczegółowej analizy kanału. Analiza powinna być napisana w języku polskim, w profesjonalnym, ale przystępnym tonie, używając formatowania Markdown.
 
-Raport musi być głęboko analityczny, ale napisany przystępnym językiem, gotowym do dyskusji. Musi uwzględniać nową strategię organizacji, skupioną wokół centralnego Portalu i koordynacji dystrybucji (zarządzanej przez Adama).
+**Analizowany Kanał:**
+- Nazwa: ${mainChannel.snippet.title}
+- Subskrybenci: ${mainChannel.statistics.subscriberCount}
+- Łączna liczba filmów: ${mainChannel.statistics.videoCount}
+- Łączna liczba wyświetleń: ${mainChannel.statistics.viewCount}
 
-Przeanalizuj poniższe, rozbudowane dane kanału YouTube i przedstaw zwięzłe, wnikliwe i kompleksowe podsumowanie w dobrze sformatowanym Markdown. Skup się na strategiach specyficznych dla kanału informacyjnego w ekosystemie radiowo-portalowym.
+**Najpopularniejsze materiały w analizowanym okresie:**
+${formatVideosForPrompt(allMainVideos)}
 
-Podsumowanie powinno zawierać:
+**Twoje zadania:**
 
-🧬 **Podsumowanie i Witalność Kanału (Executive Summary):**
-* Wysokopoziomowa ocena ogólnej kondycji kanału (wzrost subskrybentów, wyświetleń) w kontekście ostatnich działań i nowej struktury.
-* Jakie jest tempo wzrostu? Czy ostatnie zmiany (np. wprowadzenie portalu) miały już jakiś mierzalny wpływ na ruch z YouTube?
+1.  **Podsumowanie i Kluczowe Wnioski (Executive Summary):** Rozpocznij od zwięzłego podsumowania (2-3 zdania) ogólnej kondycji kanału w badanym okresie. Co się wyróżnia? Jaki jest główny trend?
+2.  **Analiza Contentu:**
+    *   **Tematyka:** Jakie tematy dominują? Czy są jakieś "gorące" tematy, które generują ponadprzeciętne zaangażowanie?
+    *   **Formaty:** Jakie formaty wideo (np. wywiady, relacje, programy studyjne, shorty) osiągają najlepsze wyniki?
+    *   **Największe Sukcesy:** Wskaż 2-3 materiały, które były największymi sukcesami i wyjaśnij, dlaczego (np. "trafiony" temat, gość, chwytliwy tytuł).
+    *   **Niewykorzystany Potencjał:** Wskaż 1-2 materiały, które miały niższe wyniki, niż można by się spodziewać. Spróbuj zdiagnozować przyczynę.
+3.  **Rekomendacje:** Na podstawie analizy, sformułuj 3-5 konkretnych, praktycznych rekomendacji dla kanału. Co warto kontynuować, co zmienić, a co zacząć robić, aby zwiększyć zasięgi i zaangażowanie?
+4.  **Szanse i Zagrożenia:** Zidentyfikuj jedną największą szansę (np. nowy format, seria, trend) i jedno kluczowe zagrożenie (np. spadek zainteresowania danym tematem, rosnąca konkurencja w niszy) dla kanału w najbliższej przyszłości.
 
-📊 **Analiza Strategii Treści (Radio vs. YouTube-First):**
-* **Filmy Długometrażowe (Long-Form):**
-    * Które formaty dominują pod względem wyników: materiały "Radio-First" (treści z anteny od Hani) czy "YouTube-First" (dedykowane videocasty)?
-    * Analiza Top Performing Videos: Czy sukces wynika z newsów "breaking news" (reaktywność), czy z dogłębnych analiz (evergreen)? Jakie tematy/goście są "samograjami"?
-* **Shorts:**
-    * Jaka jest rola Shorts? (Szybkie newsy, zapowiedzi, fragmenty z radia/portalu).
-    * Ocena Top Performing Shorts: Co przyciąga widzów? Czy efektywnie promują dłuższe treści lub portal?
-* **Transmisje na Żywo (Live Streams):**
-    * Jaka jest rola transmisji? (Głównie retransmisja radia, czy dedykowane wydarzenia YT?).
-    * Analiza Top Performing Live Streams: Które programy lub wydarzenia "na żywo" generują największe zaangażowanie i czas oglądania?
-
-📈 **Analiza Tematów i Zaangażowania:**
-* Identyfikacja kluczowych filarów tematycznych (np. polityka, gospodarka, kultura), które generują największe zaangażowanie.
-* Gdzie dyskusja (komentarze) jest najbardziej ożywiona? Czy pokrywa się to z materiałami "Radio-First" czy "YouTube-First"?
-
-🎯 **Punkty do Dyskusji (Wnioski dla Zespołu YouTube):**
-* Na podstawie danych, jakie 2-3 strategiczne możliwości stoją przed zespołem YouTube w nadchodzącym tygodniu? (np. "Podwojenie formatu X", "Testowanie nowej pory publikacji dla Y").
-* Zaproponuj 3 konkretne, kreatywne pomysły na treści (w różnych formatach), które prawdopodobnie zarezonują z publicznością:
-    * 1 pomysł na film długometrażowy (np. nowa seria YouTube-First lub adaptacja audycji radiowej).
-    * 1 pomysł na serię Shorts (np. bazująca na popularnym temacie z radia).
-    * 1 pomysł na transmisję na żywo (np. Q&A z autorem audycji).
-
-🔗 **Rekomendacje do Koordynacji (Dla Adama i Filipa):**
-* Które z analizowanych, najlepiej działających treści powinny być mocniej promowane przez Adama i Kubę Węgrzyna na social mediach (X, FB, IG, TikTok)?
-* Które materiały wideo mają największy potencjał do obudowania artykułem na Portalu przez Filipa (i odwrotnie - które artykuły z portalu powinny stać się materiałem wideo)?
-* Jakie wnioski zespół YouTube powinien przedstawić na kolegium koordynacyjnym po Poranku Wnet?
-
----
-**Dane Kanału (Channel Data):**
-${formatChannelDataForPrompt(channel, videos)}
----
-
-Proszę, rozpocznij kompleksową analizę na potrzeby kolegium.
+**Formatowanie:** Użyj Markdown. Stosuj nagłówki (np. ##), pogrubienia (**), listy punktowane (-) dla przejrzystości.
 `;
     }
 
-    try {
-        const response = await ai.models.generateContent({
-          model: model,
-          contents: prompt,
-        });
-        return response.text;
-    } catch (error) {
-        console.error("Error generating channel summary with Gemini:", error);
-        throw new Error("Failed to generate AI summary. The API call may have failed.");
-    }
+    // FIX: Use ai.models.generateContent according to guidelines
+    const response = await ai.models.generateContent({
+        model: 'gemini-2.5-pro',
+        contents: prompt,
+    });
+    
+    // FIX: Extract text output using response.text
+    return response.text;
 };
 
-export const generateVideoSummary = async (
-    video: Video,
-    comments: CommentThread[]
-): Promise<string> => {
-    const model = 'gemini-2.5-flash';
-
-    const topComments = comments.slice(0, 10).map(comment => 
-        `- (👍 ${comment.snippet.topLevelComment.snippet.likeCount}) "${comment.snippet.topLevelComment.snippet.textDisplay}"`
-    ).join('\n');
-
+/**
+ * Generates a detailed summary for a single YouTube video, including an analysis of comments.
+ */
+export const generateVideoSummary = async (video: Video, comments: CommentThread[]): Promise<string> => {
+    const commentsForPrompt = comments.length > 0
+        ? comments
+            .slice(0, 30)
+            .map(c => `- "${c.snippet.topLevelComment.snippet.textDisplay.replace(/\n/g, ' ').substring(0, 150)}..." (Polubienia: ${c.snippet.topLevelComment.snippet.likeCount})`)
+            .join('\n')
+        : 'Brak komentarzy do analizy.';
+        
     const prompt = `
-        Jesteś analitykiem w zespole YouTube Radia Wnet (Lech, Konrad, Ksenia, Łukasz, Kaśka). Twoim zadaniem jest przygotowanie zwięzłej "karty analizy" dla pojedynczego materiału wideo na nadchodzące środowe kolegium redakcyjne.
+Jesteś ekspertem-analitykiem mediów dla polskiego medium informacyjnego. Twoim zadaniem jest dogłębna analiza pojedynczego materiału wideo z YouTube. Analiza musi być w języku polskim, obiektywna, oparta na danych i sformułowana w formie raportu w formacie Markdown.
 
-    Analiza musi być szybka, wnikliwa i zawierać konkretne rekomendacje do dyskusji.
+**Analizowany Materiał Wideo:**
+- **Tytuł:** ${video.snippet.title}
+- **Opis (fragment):** ${video.snippet.description.substring(0, 200)}...
+- **Statystyki:**
+  - Wyświetlenia: ${video.statistics.viewCount}
+  - Polubienia: ${video.statistics.likeCount}
+  - Komentarze: ${video.statistics.commentCount}
 
-    Przeanalizuj poniższe dane i przedstaw ocenę w formacie Markdown, dzieląc ją na cztery kluczowe sekcje:
+**Reprezentatywne Komentarze Widzów (najbardziej trafne):**
+${commentsForPrompt}
 
-    **📝 Podsumowanie i Kategoryzacja Treści:**
-    * Na podstawie tytułu i opisu, streść w 1-2 zdaniach, o czym jest ten materiał.
-    * **Zidentyfikuj typ materiału:** Czy jest to "Radio-First" (treść z anteny radiowej od Hani), "YouTube-First" (dedykowany videocast), czy "Live Stream" (transmisja/retransmisja)?
+**Twoje zadania:**
 
-    **🚀 Analiza Wyników i Zaangażowania:**
-    * Oceń wyniki (wyświetlenia, polubienia, komentarze) w kontekście typu materiału (patrz wyżej). Czy radzi sobie lepiej/gorzej niż średnia dla tej kategorii?
-    * Oblicz wskaźnik zaangażowania (Engagement Rate) **dokładnie według wzoru**: \`(Polubienia + Komentarze) / Wyświetlenia * 100%\`. Pokaż obliczenia.
-    * Zinterpretuj wynik ER (np. "Wskaźnik X% jest wysoki jak na materiał 'Radio-First', co sugeruje, że temat mocno rezonuje z widownią YT").
-    * Zidentyfikuj potencjalne przyczyny sukcesu (lub porażki): aktualność, gość, chwytliwy tytuł, **dobre wsparcie promocyjne na Portalu/social mediach (Kuba/Adam)**?
+1.  **Streszczenie Tematyki i Głównego Przekazu:** W 2-3 zdaniach streść, o czym jest ten materiał. Jaka jest główna teza lub poruszany problem?
+2.  **Analiza Reakcji Widzów (na podstawie komentarzy):**
+    *   **Główny Sentyment:** Jaki jest ogólny odbiór materiału przez komentujących (pozytywny, negatywny, mieszany, polaryzujący)?
+    *   **Kluczowe Wątki w Dyskusji:** Zidentyfikuj 2-3 główne tematy lub argumenty, które pojawiają się w komentarzach. Co najbardziej poruszyło widzów?
+    *   **Cytaty lub Parafrazy:** Przytocz 1-2 cytaty lub parafrazy komentarzy, które najlepiej oddają nastroje publiczności.
+3.  **Ocena Potencjału Viralowego i Mocnych Stron:**
+    *   Co sprawiło, że ten materiał odniósł sukces (lub porażkę)? Analizuj tytuł, temat, gości, kontrowersyjność.
+    *   Czy materiał miał potencjał, by stać się viralem? Dlaczego tak/nie?
+4.  **Rekomendacja:** Krótka rekomendacja dla redakcji: Czy warto tworzyć więcej podobnych treści? Jeśli tak, co można w nich ulepszyć, bazując na reakcjach widzów?
 
-    **💬 Sentyment Społeczności (Analiza Komentarzy):**
-    * Jaki jest ogólny sentyment widzów (pozytywny, negatywny, merytoryczna dyskusja, polaryzacja)?
-    * Zidentyfikuj 1-2 kluczowe tematy lub pytania, które powtarzają się w komentarzach.
-    * **Co z komentarzy jest użytecznym feedbackiem** dla autora audycji (do przekazania Hani) lub dla zespołu produkcyjnego (Asi i Szymona)?
+**Formatowanie:** Użyj Markdown. Stosuj nagłówki (np. ##), pogrubienia (**), listy punktowane (-) dla przejrzystości.
+`;
 
-    💡 **Rekomendacja dla Zespołu (Co Dalej?):**
-    * Na podstawie tej analizy, co rekomendujesz? (Wybierz jedną lub dwie opcje):
-        * (Do Adama/Filipa): "Zaproponować mocniejszą promocję na Portalu/SM".
-        * (Do Zespołu YT): "Stworzyć serię Shorts z najlepszymi fragmentami".
-        * (Do Zespołu YT/Rádia): "Kontynuować ten temat / Zaprosić tego gościa ponownie".
-        * (Do Zespołu YT): "Zastosować podobny format/tytuł w przyszłości".
-        * (Inne): "Brak działań, materiał osiągnął swój potencjał".
-
-    ---
-    **Dane Materiału Wideo:**
-    - Tytuł: "${video.snippet.title}"
-    - Opis: "${video.snippet.description.substring(0, 500)}..."
-    - Data publikacji: ${new Date(video.snippet.publishedAt).toLocaleString('pl-PL')}
-    - Wyświetlenia: ${parseInt(video.statistics.viewCount).toLocaleString()}
-    - Polubienia: ${parseInt(video.statistics.likeCount).toLocaleString()}
-    - Komentarze: ${parseInt(video.statistics.commentCount).toLocaleString()}
-
-    **Najpopularniejsze Komentarze:**
-    ${topComments.length > 0 ? topComments : "Brak komentarzy do analizy."}
-    ---
-
-    Proszę, rozpocznij analizę tego konkretnego materiału wideo.
-    `;
-
-     try {
-        const response = await ai.models.generateContent({
-          model: model,
-          contents: prompt,
-        });
-        return response.text;
-    } catch (error) {
-        console.error("Error generating video summary with Gemini:", error);
-        throw new Error("Failed to generate AI summary for the video.");
-    }
-}
-
-export const updateChannelSummaryWithVideoInsights = async (
-    originalSummary: string,
-    videoAnalysis: string
-): Promise<string> => {
-    const model = 'gemini-2.5-flash';
-    const prompt = `
-        Jesteś analitykiem-strategiem w Radiu Wnet. Twoim zadaniem jest pogłębienie istniejącej analizy kanału o nowe, szczegółowe dane dotyczące jednego z kluczowych materiałów wideo.
-
-        Poniżej znajduje się **istniejąca, ogólna analiza kanału** oraz nowa, **szczegółowa analiza jednego wideo**.
-
-        Twoje zadanie:
-        1.  **Zintegruj wnioski** z analizy wideo z ogólną analizą kanału. Nie dołączaj po prostu nowej analizy na końcu. Zamiast tego, **wzbogać i zaktualizuj** odpowiednie sekcje oryginalnej analizy, aby odzwierciedlały nową wiedzę.
-        2.  Szczególnie zwróć uwagę, czy szczegółowa analiza wideo potwierdza, zaprzecza, czy może uzupełnia wnioski z ogólnej analizy.
-        3.  Jeśli analiza wideo dostarcza konkretnego przykładu na poparcie ogólnego trendu zidentyfikowanego w analizie kanału, **wyraźnie to zaznacz** (np. "Doskonałym przykładem naszego sukcesu w formacie X jest materiał Y, którego szczegółowa analiza pokazuje...").
-        4.  Zachowaj oryginalną strukturę i formatowanie Markdown. Wynik powinien wyglądać jak ulepszona wersja oryginalnej analizy, a nie dwa oddzielne dokumenty.
-
-        ---
-        **ISTNIEJĄCA ANALIZA KANAŁU (DO AKTUALIZACJI):**
-        ---
-        ${originalSummary}
-        ---
-        **NOWA, SZCZEGÓŁOWA ANALIZA WIDEO (DO ZINTEGROWANIA):**
-        ---
-        ${videoAnalysis}
-        ---
-
-        Proszę, przedstaw zaktualizowaną i wzbogaconą analizę kanału.
-    `;
-
-    try {
-        const response = await ai.models.generateContent({
-            model: model,
-            contents: prompt,
-        });
-        return response.text;
-    } catch (error) {
-        console.error("Error updating channel summary with Gemini:", error);
-        throw new Error("Failed to update AI summary with video insights.");
-    }
+    const response = await ai.models.generateContent({
+        model: 'gemini-2.5-pro',
+        contents: prompt,
+    });
+    
+    return response.text;
 };
 
-export const generateUpdateChangelog = async (
-    oldSummary: string,
-    newSummary: string
-): Promise<string> => {
-    const model = 'gemini-2.5-flash';
-    const prompt = `
-        Jesteś asystentem AI, którego zadaniem jest informowanie użytkownika o zmianach w analizie.
-        Porównaj poniższą STARĄ i NOWĄ wersję analizy kanału YouTube. Zidentyfikuj, jakie kluczowe, **nowe wnioski** zostały dodane do NOWEJ wersji, bazując na szczegółowej analizie konkretnego filmu.
-
-        Twoje zadanie:
-        - Stwórz bardzo zwięzłą, 1-2 punktową listę w Markdown, która podsumowuje najważniejsze nowe informacje.
-        - Skup się wyłącznie na tym, co zostało dodane lub pogłębione. Nie opisuj, co pozostało bez zmian.
-        - Użyj języka, który jasno pokazuje, że analiza została "wzbogacona o nowe detale".
-
-        Przykład:
-        *   Szczegółowa analiza filmu "X" potwierdziła, że nasza strategia dotycząca gości specjalnych przynosi ponadprzeciętne zaangażowanie.
-        *   Dodano nową rekomendację dotyczącą tworzenia serii Shorts z najciekawszych fragmentów wywiadów, co było bezpośrednim wnioskiem z analizy komentarzy pod filmem.
-
-        ---
-        **STARA ANALIZA:**
-        ---
-        ${oldSummary}
-        ---
-        **NOWA, WZBOGACONA ANALIZA:**
-        ---
-        ${newSummary}
-        ---
-
-        Proszę, wygeneruj krótkie podsumowanie zmian.
-    `;
-
-    try {
-        const response = await ai.models.generateContent({
-            model: model,
-            contents: prompt,
-        });
-        return response.text;
-    } catch (error) {
-        console.error("Error generating update changelog with Gemini:", error);
-        throw new Error("Failed to generate update changelog.");
-    }
-};
-
+/**
+ * Generates a concise, spoken-word summary from a detailed analysis text.
+ */
 export const generateLectorSummary = async (fullAnalysis: string): Promise<string> => {
-    const model = 'gemini-2.5-flash';
-    const prompt = `
-        Jesteś lektorem i redaktorem w Radiu Wnet, przygotowującym krótkie, dynamiczne "intro" do podcastu analitycznego. Twoim zadaniem jest przeczytanie poniższej, szczegółowej analizy kanału YouTube i stworzenie na jej podstawie zwięzłego, 2-3 akapitowego streszczenia.
-
-        **Kryteria:**
-        - **Format:** Tekst mówiony, angażujący, jak zapowiedź w radiu.
-        - **Cel:** Uchwycenie najważniejszych wniosków i rekomendacji z pełnej analizy.
-        - **Długość:** Maksymalnie 150 słów. To kluczowe, streszczenie musi być krótkie.
-        - **Styl:** Profesjonalny, ale przystępny. Używaj zwrotów takich jak "Co z tego wynika?", "Kluczowa lekcja to...", "W skrócie...".
-
-        **PEŁNA ANALIZA (MATERIAŁ ŹRÓDŁOWY):**
-        ---
-        ${fullAnalysis}
-        ---
-
-        Proszę, przygotuj teraz krótkie, mówione podsumowanie tej analizy.
-    `;
-
-    try {
-        const response = await ai.models.generateContent({
-            model: model,
-            contents: prompt,
-        });
-        return response.text;
-    } catch (error) {
-        console.error("Error generating lector summary with Gemini:", error);
-        throw new Error("Failed to generate lector summary.");
+    if (!fullAnalysis || !fullAnalysis.trim()) {
+        return "Brak analizy do streszczenia.";
     }
+
+    const prompt = `
+Jesteś redaktorem przygotowującym materiały dla lektora w radiu informacyjnym. Otrzymałeś szczegółową analizę (poniżej). Twoim zadaniem jest stworzenie na jej podstawie BARDZO krótkiego, zwięzłego streszczenia (maksymalnie 2-3 zdania, ok. 25-40 słów). Streszczenie musi uchwycić absolutnie najważniejszy wniosek lub kluczową rekomendację z całej analizy. Powinno być napisane prostym, mówionym językiem, gotowym do przeczytania na antenie.
+
+**Pełna Analiza:**
+---
+${fullAnalysis}
+---
+
+**Twoje zadanie:** Wygeneruj tylko i wyłącznie tekst streszczenia dla lektora. Bez żadnych dodatkowych nagłówków czy wstępów.
+`;
+
+    const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: prompt,
+        config: {
+            temperature: 0.2,
+        },
+    });
+
+    return response.text.trim();
+};
+
+
+/**
+ * Integrates new insights from a single video analysis into an existing channel summary.
+ */
+export const updateChannelSummaryWithVideoInsights = async (
+    currentSummary: string,
+    videoInsight: string
+): Promise<string> => {
+    const prompt = `
+Jesteś edytorem AI, którego zadaniem jest inteligentne zaktualizowanie istniejącego raportu analitycznego o nowe informacje. Poniżej znajduje się główna analiza kanału oraz nowa, szczegółowa analiza jednego z materiałów wideo z tego kanału.
+
+Twoim zadaniem jest zintegrowanie wniosków z analizy wideo z główną analizą kanału. Nie przepisuj wszystkiego. Zamiast tego, zidentyfikuj, gdzie wnioski z analizy wideo mogą wzbogacić, potwierdzić lub zakwestionować wnioski z analizy ogólnej.
+
+**Główna Analiza Kanału:**
+---
+${currentSummary}
+---
+
+**Nowe Wnioski z Analizy Konkretnego Wideo:**
+---
+${videoInsight}
+---
+
+**Instrukcje:**
+1.  **Zachowaj Strukturę:** Utrzymaj oryginalną strukturę (nagłówki, sekcje) głównej analizy.
+2.  **Wzbogać, Nie Zastępuj:** Dodaj nowe informacje w odpowiednich sekcjach. Na przykład, jeśli analiza wideo pokazuje sukces konkretnego formatu, dodaj zdanie o tym w sekcji "Analiza Contentu" lub "Rekomendacje" w głównej analizie.
+3.  **Bądź Subtelny:** Integracja powinna być płynna. Używaj sformułowań takich jak "Dobrym przykładem jest materiał [tytuł], który...", "Potwierdza to analiza filmu [tytuł], gdzie widzowie..."
+4.  **Nie Dodawaj Nowych Sekcji:** Nie twórz osobnej sekcji dla analizy wideo. Informacje z niej mają stać się częścią istniejących sekcji.
+5.  **Zwróć Pełny, Zaktualizowany Raport:** Twoim wynikiem końcowym powinien być kompletny, zaktualizowany tekst głównej analizy, zawierający już nowe wnioski.
+
+**Wygeneruj zaktualizowaną, pełną analizę kanału.**
+`;
+
+    const response = await ai.models.generateContent({
+        model: 'gemini-2.5-pro',
+        contents: prompt,
+    });
+    
+    return response.text;
+};
+
+/**
+ * Generates a changelog by comparing an old summary with a new, updated one.
+ */
+export const generateUpdateChangelog = async (oldSummary: string, newSummary: string): Promise<string> => {
+    const prompt = `
+Jesteś asystentem AI, który pomaga analitykowi zrozumieć, co zmieniło się w raporcie po dodaniu nowych danych. Poniżej znajdują się dwie wersje tego samego raportu: "stara" i "nowa" (zaktualizowana o szczegółową analizę jednego wideo).
+
+Twoim zadaniem jest wygenerowanie krótkiej, zwięzłej listy zmian (changelog) w formacie Markdown, która podsumowuje najważniejsze dodane informacje. Skup się na **NOWYCH WNIOSKACH**, a nie na kosmetycznych zmianach w sformułowaniach.
+
+**Stara Wersja Raportu:**
+---
+${oldSummary}
+---
+
+**Nowa Wersja Raportu:**
+---
+${newSummary}
+---
+
+**Przykład, jak powinien wyglądać wynik:**
+**Analiza została wzbogacona o:**
+* **Konkretny przykład sukcesu:** Wskazano, że film "Tytuł filmu" jest świetnym przykładem angażującego formatu wywiadu.
+* **Pogłębione zrozumienie reakcji widzów:** Dodano wniosek, że widzowie szczególnie cenią sobie dogłębne analizy, co widać w komentarzach pod nowym materiałem.
+* **Udoskonalona rekomendacja:** Wzmocniono rekomendację dotyczącą [temat], podając konkretny dowód na jej słuszność.
+
+**Wygeneruj listę zmian, zaczynając od pogrubionego nagłówka. Używaj gwiazdek (*) dla punktów listy.**
+`;
+
+    const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: prompt,
+    });
+    
+    return response.text;
+};
+
+/**
+ * Refines an existing analysis based on a user's text command.
+ */
+export const refineAnalysis = async (currentAnalysis: string, command: string): Promise<string> => {
+    const prompt = `
+Jesteś asystentem AI, który pomaga analitykowi mediów w pracy nad raportem. Poniżej znajduje się aktualna wersja raportu oraz polecenie od analityka, które dotyczy modyfikacji tego raportu.
+
+Twoim zadaniem jest zastosowanie się do polecenia i wygenerowanie **nowej, pełnej wersji raportu**, która uwzględnia wprowadzone zmiany.
+
+**Aktualny Raport:**
+---
+${currentAnalysis}
+---
+
+**Polecenie od Analityka:**
+---
+"${command}"
+---
+
+**Instrukcje:**
+1.  Dokładnie przeanalizuj polecenie.
+2.  Zmodyfikuj raport zgodnie z poleceniem. Może to oznaczać dodanie nowej sekcji, przeredagowanie istniejącej, skupienie się na innym aspekcie, skrócenie lub rozwinięcie jakiejś części.
+3.  Zachowaj profesjonalny ton i formatowanie Markdown.
+4.  Twoim wynikiem końcowym musi być **cały, zaktualizowany raport**, a nie tylko zmieniony fragment.
+
+**Wygeneruj zaktualizowaną, pełną wersję raportu.**
+`;
+    
+    const response = await ai.models.generateContent({
+        model: 'gemini-2.5-pro',
+        contents: prompt,
+    });
+    
+    return response.text;
 };

@@ -1,16 +1,22 @@
-import React, { useState, useCallback, useMemo, useEffect } from 'react';
-import type { Channel, Video, CommentThread, AnalysisResult } from './types';
+import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
+import type { Channel, Video, CommentThread, AnalysisResult, AnalyzedVideo } from './types';
 import { getChannelStats, getChannelVideos } from './services/youtubeService';
-import { generateChannelSummary, updateChannelSummaryWithVideoInsights, generateUpdateChangelog, generateLectorSummary } from './services/geminiService';
-import ChannelInput from './components/ChannelInput';
+import { generateChannelSummary, updateChannelSummaryWithVideoInsights, generateUpdateChangelog, generateLectorSummary, refineAnalysis } from './services/geminiService';
+import { exportAnalysesToHTML } from './services/exportService';
 import ChannelHeader from './components/ChannelHeader';
 import VideoStatsGrid from './components/VideoStatsGrid';
 import AISummary from './components/AISummary';
 import VideoDetailView from './components/VideoDetailView';
-import { WnetLogo, SparklesIcon, KeyIcon, AudioWaveIcon } from './components/icons';
+import { WnetLogo } from './components/icons';
 import QuickNav from './components/QuickNav';
 import HistorySidebar from './components/HistorySidebar';
 import AnalysisProgress from './components/AnalysisProgress';
+import Scoreboard from './components/Scoreboard';
+import { calculateEngagementRate } from './utils';
+import Controls from './components/Controls';
+import MinimizedSidebar from './components/MinimizedSidebar';
+import { ChevronDoubleLeftIcon } from './components/icons';
+import Footer from './components/Footer';
 
 
 const PREDEFINED_CHANNELS = [
@@ -31,35 +37,33 @@ const PREDEFINED_CHANNELS = [
 
 const RADIO_WNET_ID = 'UCMA-v2JV_9ZYNoY4uY4mRWA';
 
-interface VideoAnalysisCache {
-    [videoId: string]: {
-        comments: CommentThread[];
-        summary: string;
-        lectorSummary: string;
+const RANKS = [
+    { title: 'Rekrut Areny', level: 1, threshold: 0 },
+    { title: 'Szermierz Danych', level: 2, threshold: 3 },
+    { title: 'Taktyk Widowni', level: 3, threshold: 6 },
+    { title: 'Mistrz Strategii', level: 4, threshold: 11 },
+    { title: 'Legenda Areny', level: 5, threshold: 20 },
+];
+
+const getRankDetails = (analysesCount: number) => {
+    let currentRank = RANKS[0];
+    for (let i = RANKS.length - 1; i >= 0; i--) {
+        if (analysesCount >= RANKS[i].threshold) {
+            currentRank = RANKS[i];
+            break;
+        }
+    }
+    
+    const nextRank = RANKS.find(r => r.level === currentRank.level + 1) || null;
+    
+    return {
+        rank: currentRank,
+        nextRank: nextRank,
     };
-}
+};
+
 
 const App: React.FC = () => {
-    const [apiKey, setApiKey] = useState<string>(() => localStorage.getItem('youtubeApiKey') || '');
-    const [elevenLabsApiKey, setElevenLabsApiKey] = useState<string>(() => localStorage.getItem('elevenLabsApiKey') || '');
-
-
-    useEffect(() => {
-        if (apiKey) {
-            localStorage.setItem('youtubeApiKey', apiKey);
-        } else {
-            localStorage.removeItem('youtubeApiKey');
-        }
-    }, [apiKey]);
-
-     useEffect(() => {
-        if (elevenLabsApiKey) {
-            localStorage.setItem('elevenLabsApiKey', elevenLabsApiKey);
-        } else {
-            localStorage.removeItem('elevenLabsApiKey');
-        }
-    }, [elevenLabsApiKey]);
-
     const getInitialDate = (offsetDays: number = 0) => {
         const date = new Date();
         date.setDate(date.getDate() + offsetDays);
@@ -68,30 +72,163 @@ const App: React.FC = () => {
 
     const [startDate, setStartDate] = useState<string>(getInitialDate(-7));
     const [endDate, setEndDate] = useState<string>(getInitialDate());
-    const [channelId, setChannelId] = useState<string>(PREDEFINED_CHANNELS[1].id);
+    const [channelId, setChannelId] = useState<string>(PREDEFINED_CHANNELS[0].id);
     
     const [analysisHistory, setAnalysisHistory] = useState<AnalysisResult[]>([]);
     const [currentAnalysisId, setCurrentAnalysisId] = useState<string | null>(null);
     const [isUpdatingSummary, setIsUpdatingSummary] = useState<boolean>(false);
     const [updateChangelog, setUpdateChangelog] = useState<string | null>(null);
     const [progressSteps, setProgressSteps] = useState<string[]>([]);
+    const [selectedHistoryIds, setSelectedHistoryIds] = useState<Set<string>>(new Set());
+    const [analysisJustCompleted, setAnalysisJustCompleted] = useState(false);
 
     const [isLoading, setIsLoading] = useState<boolean>(false);
     const [isGeneratingSummary, setIsGeneratingSummary] = useState<boolean>(false);
     const [error, setError] = useState<string | null>(null);
     const [selectedVideo, setSelectedVideo] = useState<Video | null>(null);
-    const [videoAnalysisCache, setVideoAnalysisCache] = useState<VideoAnalysisCache>({});
     
+    const [isSidebarMinimized, setIsSidebarMinimized] = useState(false);
+    const [sidebarWidth, setSidebarWidth] = useState(320); // Corresponds to w-80
+    const isResizing = useRef(false);
+
+    const [headerHeight, setHeaderHeight] = useState(0);
+    const headerRef = useRef<HTMLDivElement>(null);
+    const mainContentRef = useRef<HTMLDivElement>(null);
+
+    const [isControlsOpen, setIsControlsOpen] = useState(true);
+
+    useEffect(() => {
+        const headerElement = headerRef.current;
+        if (!headerElement) return;
+
+        const resizeObserver = new ResizeObserver(entries => {
+            if (entries[0]) {
+                setHeaderHeight(entries[0].contentRect.height);
+            }
+        });
+
+        resizeObserver.observe(headerElement);
+
+        return () => {
+            if (headerElement) {
+                resizeObserver.unobserve(headerElement);
+            }
+        };
+    }, []);
+
+    const handleResizeMouseDown = useCallback((e: React.MouseEvent) => {
+        e.preventDefault();
+        isResizing.current = true;
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+        window.addEventListener('mousemove', handleResizeMouseMove);
+        window.addEventListener('mouseup', handleResizeMouseUp);
+    }, []);
+
+    const handleResizeMouseMove = useCallback((e: MouseEvent) => {
+        if (!isResizing.current) return;
+        const newWidth = e.clientX;
+        if (newWidth >= 280 && newWidth <= 600) {
+            setSidebarWidth(newWidth);
+        }
+    }, []);
+
+    const handleResizeMouseUp = useCallback(() => {
+        isResizing.current = false;
+        document.body.style.cursor = 'default';
+        document.body.style.userSelect = 'auto';
+        window.removeEventListener('mousemove', handleResizeMouseMove);
+        window.removeEventListener('mouseup', handleResizeMouseUp);
+    }, []);
+
+
     const currentAnalysis = useMemo(() => {
         return analysisHistory.find(analysis => analysis.id === currentAnalysisId) || null;
     }, [analysisHistory, currentAnalysisId]);
 
+    const gamificationStats = useMemo(() => {
+        const totalAnalyses = analysisHistory.length;
+        const wnetAnalysesCount = analysisHistory.filter(a => !a.isComparative).length;
+        const comparativeAnalysesCount = analysisHistory.filter(a => a.isComparative).length;
+
+        let highestEngagementRate = -1;
+        let topVideo: Video | null = null;
+        const uniqueChannels = new Set<string>();
+        let hasGoldenShot = false;
+        let hasDiscussionKing = false;
+        let hasViralAlert = false;
+
+        analysisHistory.forEach(analysis => {
+            uniqueChannels.add(analysis.channelName);
+            const allVideos = [
+                ...analysis.videoData.longForm,
+                ...analysis.videoData.shorts,
+                ...analysis.videoData.liveStreams,
+            ];
+            allVideos.forEach(video => {
+                const engagement = calculateEngagementRate(video);
+                if (engagement > highestEngagementRate) {
+                    highestEngagementRate = engagement;
+                    topVideo = video;
+                }
+                if (parseInt(video.statistics.viewCount, 10) >= 1000000) {
+                    hasGoldenShot = true;
+                }
+                if (parseInt(video.statistics.commentCount, 10) >= 1000) {
+                    hasDiscussionKing = true;
+                }
+            });
+            analysis.videoData.shorts.forEach(short => {
+                if(calculateEngagementRate(short) > 5) {
+                    hasViralAlert = true;
+                }
+            });
+        });
+        
+        const toISODateString = (date: Date) => date.toISOString().split('T')[0];
+
+        const checkLastWeekPreset = (start: string, end: string): boolean => {
+            const today = new Date();
+            const dayOfWeek = today.getDay(); // 0 (Sun) to 6 (Sat)
+            const lastSaturday = new Date(today);
+            lastSaturday.setDate(today.getDate() - (dayOfWeek + 1) % 7);
+            const lastSunday = new Date(lastSaturday);
+            lastSunday.setDate(lastSaturday.getDate() - 6);
+            
+            return start === toISODateString(lastSunday) && end === toISODateString(lastSaturday);
+        };
+        
+        const hasLastWeekWnetAnalysis = analysisHistory.some(
+            analysis => 
+                !analysis.isComparative && 
+                checkLastWeekPreset(analysis.startDate, analysis.endDate)
+        );
+
+        const analysisStreak = totalAnalyses >= 5;
+        const { rank, nextRank } = getRankDetails(totalAnalyses);
+
+        return {
+            totalAnalyses,
+            wnetAnalysesCount,
+            comparativeAnalysesCount,
+            topEngagementVideo: topVideo,
+            highestEngagementRate: highestEngagementRate > -1 ? highestEngagementRate : 0,
+            uniqueChannels: Array.from(uniqueChannels),
+            hasGoldenShot,
+            hasDiscussionKing,
+            hasViralAlert,
+            analysisStreak,
+            rank,
+            nextRank,
+            hasLastWeekWnetAnalysis,
+        };
+    }, [analysisHistory]);
+
+    const addProgressStep = useCallback((message: string) => {
+        setProgressSteps(prev => [...prev, message]);
+    }, []);
 
     const handleFetchStats = useCallback(async () => {
-        if (!apiKey) {
-            setError("Proszę podać klucz YouTube Data API, aby rozpocząć analizę.");
-            return;
-        }
         if (!channelId) {
             setError("Proszę wybrać kanał do analizy.");
             return;
@@ -107,21 +244,18 @@ const App: React.FC = () => {
         setSelectedVideo(null);
         setUpdateChangelog(null);
         setProgressSteps([]);
+        setAnalysisJustCompleted(true);
         
         const newAnalysisId = `analysis-${Date.now()}`;
 
-        const addProgressStep = (message: string) => {
-            setProgressSteps(prev => [...prev, message]);
-        };
-
         try {
-            addProgressStep('> Inicjuję połączenie z YouTube Data API...');
+            addProgressStep('Inicjuję połączenie z YouTube Data API...');
             const isComparativeAnalysis = channelId !== RADIO_WNET_ID;
             
-            const selectedChannelPromise = getChannelStats(apiKey, channelId);
-            addProgressStep('> Wysyłam żądanie o statystyki wybranego kanału...');
-            const selectedVideosPromise = getChannelVideos(apiKey, channelId, startDate, endDate);
-            addProgressStep('> Wysyłam żądanie o listę filmów wybranego kanału...');
+            const selectedChannelPromise = getChannelStats(channelId);
+            addProgressStep('Wysyłam żądanie o statystyki wybranego kanału...');
+            const selectedVideosPromise = getChannelVideos(channelId, startDate, endDate);
+            addProgressStep('Wysyłam żądanie o listę filmów wybranego kanału...');
 
             let mainChannelForPrompt: Channel;
             let mainVideosForPrompt: { longForm: Video[], shorts: Video[], liveStreams: Video[] };
@@ -132,9 +266,9 @@ const App: React.FC = () => {
             let displayVideos: { longForm: Video[], shorts: Video[], liveStreams: Video[] };
 
             if (isComparativeAnalysis) {
-                addProgressStep('> Analiza porównawcza: Pobieram dane dla kanału Radio Wnet...');
-                const radioWnetChannelPromise = getChannelStats(apiKey, RADIO_WNET_ID);
-                const radioWnetVideosPromise = getChannelVideos(apiKey, RADIO_WNET_ID, startDate, endDate);
+                addProgressStep('Analiza porównawcza: Pobieram dane dla kanału Radio Wnet...');
+                const radioWnetChannelPromise = getChannelStats(RADIO_WNET_ID);
+                const radioWnetVideosPromise = getChannelVideos(RADIO_WNET_ID, startDate, endDate);
                 const [selectedChannel, selectedVideos, wnetChannel, wnetVideos] = await Promise.all([
                     selectedChannelPromise,
                     selectedVideosPromise,
@@ -142,8 +276,8 @@ const App: React.FC = () => {
                     radioWnetVideosPromise
                 ]);
                 
-                addProgressStep(`> Pobrano dane dla: ${selectedChannel.snippet.title}... [OK]`);
-                addProgressStep(`> Pobrano dane dla: ${wnetChannel.snippet.title}... [OK]`);
+                addProgressStep(`[ OK ] Pobrano dane dla: ${selectedChannel.snippet.title}`);
+                addProgressStep(`[ OK ] Pobrano dane dla: ${wnetChannel.snippet.title}`);
 
                 displayChannel = selectedChannel;
                 displayVideos = selectedVideos;
@@ -154,7 +288,7 @@ const App: React.FC = () => {
                 competitorVideosForPrompt = selectedVideos;
             } else {
                 const [selectedChannel, selectedVideos] = await Promise.all([selectedChannelPromise, selectedVideosPromise]);
-                addProgressStep(`> Pobrano dane dla: ${selectedChannel.snippet.title}... [OK]`);
+                addProgressStep(`[ OK ] Pobrano dane dla: ${selectedChannel.snippet.title}`);
                 displayChannel = selectedChannel;
                 displayVideos = selectedVideos;
 
@@ -162,7 +296,8 @@ const App: React.FC = () => {
                 mainVideosForPrompt = selectedVideos;
             }
             
-            // --- OPTIMIZATION: RENDER YOUTUBE DATA FIRST ---
+            addProgressStep('[ OK ] Dane kanału i listy wideo pobrane. Możesz już je przeglądać.');
+            
             const hasDisplayVideos = displayVideos.longForm.length > 0 || displayVideos.shorts.length > 0 || displayVideos.liveStreams.length > 0;
             const initialSummary = hasDisplayVideos ? '' : "Nie znaleziono filmów (w tym Shorts i transmisji na żywo) w wybranym zakresie dat do analizy.";
             
@@ -177,19 +312,32 @@ const App: React.FC = () => {
                 isComparative: isComparativeAnalysis,
                 channelName: displayChannel.snippet.title,
                 integratedVideoIds: [],
+                analyzedVideos: {},
             };
 
-            setAnalysisHistory(prev => [...prev, newAnalysisShell]);
+            setAnalysisHistory(prev => [newAnalysisShell, ...prev]);
             setCurrentAnalysisId(newAnalysisShell.id);
-            setIsLoading(false); // UI renders here!
+            setIsLoading(false); // Data from YouTube is loaded, we can show grids
 
-            // --- OPTIMIZATION: GENERATE AI SUMMARY IN BACKGROUND ---
             const hasMainVideosForPrompt = mainVideosForPrompt.longForm.length > 0 || mainVideosForPrompt.shorts.length > 0 || mainVideosForPrompt.liveStreams.length > 0;
             const hasCompetitorVideos = competitorVideosForPrompt ? (competitorVideosForPrompt.longForm.length > 0 || competitorVideosForPrompt.shorts.length > 0 || competitorVideosForPrompt.liveStreams.length > 0) : false;
             
             if (mainChannelForPrompt && (hasMainVideosForPrompt || hasCompetitorVideos)) {
                 setIsGeneratingSummary(true);
-                addProgressStep('> Przekazuję zebrane dane do Gemini AI w celu analizy strategicznej...');
+                addProgressStep('-----------------------------------------');
+                addProgressStep('Rozpoczynam generowanie analizy AI...');
+                addProgressStep('Prompt to zestaw instrukcji dla modelu językowego.');
+
+                if (isComparativeAnalysis && competitorChannelForPrompt) {
+                     addProgressStep('Konstruuję zapytanie (prompt) dla modelu Gemini. Wybrany szablon: Analiza Porównawcza.');
+                     addProgressStep(`Wypełniam prompt danymi (kontekstem): Główny kanał='${mainChannelForPrompt.snippet.title}', Konkurent='${competitorChannelForPrompt.snippet.title}'`);
+                } else {
+                     addProgressStep('Konstruuję zapytanie (prompt) dla modelu Gemini. Wybrany szablon: Analiza Generalna Kanału.');
+                     const totalVideos = mainVideosForPrompt.longForm.length + mainVideosForPrompt.shorts.length + mainVideosForPrompt.liveStreams.length;
+                     addProgressStep(`Wypełniam prompt danymi (kontekstem): Kanał='${mainChannelForPrompt.snippet.title}', Łącznie filmów=${totalVideos}`);
+                }
+                
+                addProgressStep("Wysyłam zapytanie do Google Gemini (model: gemini-2.5-pro)... To może potrwać kilkanaście sekund.");
                 try {
                     const summary = await generateChannelSummary(
                         mainChannelForPrompt,
@@ -197,9 +345,8 @@ const App: React.FC = () => {
                         competitorChannelForPrompt,
                         competitorVideosForPrompt
                     );
-                    addProgressStep('> Analiza AI zakończona pomyślnie. Generowanie raportu... [OK]');
+                    addProgressStep('[ OK ] Model AI zakończył generowanie. Otrzymano odpowiedź.');
                     
-                    // Update history with the full summary first
                     setAnalysisHistory(prev => 
                         prev.map(analysis => 
                             analysis.id === newAnalysisId 
@@ -208,12 +355,11 @@ const App: React.FC = () => {
                         )
                     );
 
-                    // Now, generate the lector summary
-                    addProgressStep('> Generuję podsumowanie dla lektora...');
+                    addProgressStep('Generuję podsumowanie dla lektora...');
                     const lectorSummary = await generateLectorSummary(summary);
-                    addProgressStep('> Podsumowanie dla lektora gotowe... [OK]');
+                    addProgressStep('[ OK ] Podsumowanie dla lektora gotowe.');
+                    addProgressStep('Zakończono. Wyświetlam pełny raport.');
                     
-                    // Update history again with the lector summary
                     setAnalysisHistory(prev => 
                         prev.map(analysis => 
                             analysis.id === newAnalysisId 
@@ -225,7 +371,7 @@ const App: React.FC = () => {
                 } catch (aiError) {
                     console.error("AI Summary generation failed:", aiError);
                     const summary = "Wystąpił błąd podczas generowania analizy AI. Model może być niedostępny lub żądanie nie mogło zostać przetworzone.";
-                    addProgressStep('> BŁĄD: Nie udało się wygenerować analizy AI.');
+                    addProgressStep('BŁĄD: Nie udało się wygenerować analizy AI.');
                     setAnalysisHistory(prev => 
                         prev.map(analysis => 
                             analysis.id === newAnalysisId 
@@ -236,38 +382,93 @@ const App: React.FC = () => {
                 } finally {
                     setIsGeneratingSummary(false);
                 }
+            } else {
+                addProgressStep('Zakończono. Brak materiałów do analizy przez AI.');
+                setIsGeneratingSummary(false);
             }
 
         } catch (err) {
             console.error(err);
             const errorMessage = err instanceof Error ? err.message : "Wystąpił nieznany błąd.";
             setError(`Nie udało się pobrać danych z YouTube: ${errorMessage}`);
-            addProgressStep(`> BŁĄD KRYTYCZNY: ${errorMessage}`);
+            addProgressStep(`BŁĄD KRYTYCZNY: ${errorMessage}`);
             setIsLoading(false);
             setIsGeneratingSummary(false);
         }
-    }, [startDate, endDate, channelId, apiKey]);
+    }, [startDate, endDate, channelId, addProgressStep]);
+    
+    const handleHumanInput = useCallback(async (command: string) => {
+        if (!currentAnalysis || !currentAnalysis.aiSummary) return;
+
+        setIsUpdatingSummary(true);
+        addProgressStep(`> ${command}`);
+        addProgressStep("Przetwarzam polecenie człowieka...");
+        addProgressStep("Redaguję nowy prompt aktualizujący dla Gemini...");
+
+        try {
+            const refinedSummary = await refineAnalysis(currentAnalysis.aiSummary, command);
+            addProgressStep("[ OK ] Otrzymano zaktualizowaną analizę.");
+            
+            addProgressStep("Generuję nowe podsumowanie dla lektora...");
+            const refinedLectorSummary = await generateLectorSummary(refinedSummary);
+            addProgressStep("[ OK ] Podsumowanie dla lektora gotowe.");
+            
+            setAnalysisHistory(prevHistory => 
+                prevHistory.map(analysis => {
+                    if (analysis.id === currentAnalysisId) {
+                        return { 
+                            ...analysis, 
+                            aiSummary: refinedSummary,
+                            lectorSummary: refinedLectorSummary,
+                        };
+                    }
+                    return analysis;
+                })
+            );
+            addProgressStep("Zakończono. Analiza została zaktualizowana.");
+
+        } catch (error) {
+            console.error("Failed to refine analysis:", error);
+            const errorMessage = error instanceof Error ? error.message : "Nieznany błąd.";
+            addProgressStep(`BŁĄD: Nie udało się zaktualizować analizy. ${errorMessage}`);
+        } finally {
+            setIsUpdatingSummary(false);
+        }
+    }, [currentAnalysis, currentAnalysisId, addProgressStep]);
     
     const handleSelectAnalysis = (analysisId: string) => {
-        setSelectedVideo(null); // Ensure we are not in video detail view
+        setSelectedVideo(null);
         setUpdateChangelog(null);
         setCurrentAnalysisId(analysisId);
+        setAnalysisJustCompleted(false);
+        setProgressSteps([]);
     };
 
     const handleVideoSelect = (video: Video) => {
         setUpdateChangelog(null);
         setSelectedVideo(video);
     };
+
+    const handleSelectVideoFromHistory = (analysisId: string, videoId: string) => {
+        const analysis = analysisHistory.find(a => a.id === analysisId);
+        const videoData = analysis?.analyzedVideos?.[videoId]?.video;
+        if (analysis && videoData) {
+            setCurrentAnalysisId(analysisId);
+            setSelectedVideo(videoData);
+            setAnalysisJustCompleted(false);
+            setProgressSteps([]);
+        }
+    };
     
     const handleClearSelectedVideo = useCallback(async () => {
         const justExitedVideoId = selectedVideo?.id;
         setSelectedVideo(null);
 
-        const hasVideoInsight = justExitedVideoId && videoAnalysisCache[justExitedVideoId];
+        const hasVideoInsight = justExitedVideoId && currentAnalysis?.analyzedVideos?.[justExitedVideoId];
         const isAlreadyIntegrated = currentAnalysis?.integratedVideoIds?.includes(justExitedVideoId || '');
 
         if (hasVideoInsight && currentAnalysis && !isAlreadyIntegrated) {
-            const videoInsight = videoAnalysisCache[justExitedVideoId].summary;
+            const videoInsight = currentAnalysis.analyzedVideos[justExitedVideoId].summary;
             const oldSummary = currentAnalysis.aiSummary;
             
             setIsUpdatingSummary(true);
@@ -281,7 +482,6 @@ const App: React.FC = () => {
                 const changelog = await generateUpdateChangelog(oldSummary, updatedSummary);
                 setUpdateChangelog(changelog);
                 
-                // Also update the lector summary based on the new full summary
                 const updatedLectorSummary = await generateLectorSummary(updatedSummary);
                 
                 setAnalysisHistory(prevHistory => 
@@ -303,108 +503,173 @@ const App: React.FC = () => {
                 setIsUpdatingSummary(false);
             }
         }
-    }, [selectedVideo, videoAnalysisCache, currentAnalysis, currentAnalysisId]);
+    }, [selectedVideo, currentAnalysis, currentAnalysisId]);
 
-    const handleVideoDataLoaded = (videoId: string, data: { comments: CommentThread[], summary: string, lectorSummary: string }) => {
-        setVideoAnalysisCache(prevCache => ({
-            ...prevCache,
-            [videoId]: data,
-        }));
+    const handleVideoDataLoaded = (videoId: string, data: AnalyzedVideo) => {
+        setAnalysisHistory(prevHistory => 
+            prevHistory.map(analysis => {
+                if (analysis.id === currentAnalysisId) {
+                    const updatedAnalyzedVideos = {
+                        ...(analysis.analyzedVideos || {}),
+                        [videoId]: data
+                    };
+                    return { ...analysis, analyzedVideos: updatedAnalyzedVideos };
+                }
+                return analysis;
+            })
+        );
     };
+
+    const handleToggleSelection = (id: string) => {
+        setSelectedHistoryIds(prev => {
+            const newSet = new Set(prev);
+            if (newSet.has(id)) {
+                newSet.delete(id);
+            } else {
+                newSet.add(id);
+            }
+            return newSet;
+        });
+    };
+
+    const handleExport = () => {
+        if (selectedHistoryIds.size === 0) return;
+
+        const allChannelsData = analysisHistory.map(a => a.channelData);
+
+        const selectedAnalyses = analysisHistory
+            .map(analysis => {
+                const isChannelSelected = selectedHistoryIds.has(analysis.id);
+                const selectedVideos = Object.values(analysis.analyzedVideos || {})
+                    .filter(v => selectedHistoryIds.has(`${analysis.id}-${v.video.id}`));
+
+                if (!isChannelSelected && selectedVideos.length === 0) {
+                    return null;
+                }
+
+                return {
+                    channelData: analysis.channelData,
+                    channelAnalysis: isChannelSelected ? {
+                        summary: analysis.aiSummary,
+                        lectorSummary: analysis.lectorSummary,
+                    } : undefined,
+                    videoAnalyses: selectedVideos
+                };
+            })
+            .filter(Boolean) as { channelData: Channel, channelAnalysis?: any, videoAnalyses: AnalyzedVideo[] }[];
+        
+        selectedAnalyses.sort((a, b) => {
+            if (a.channelData.id === RADIO_WNET_ID) return -1;
+            if (b.channelData.id === RADIO_WNET_ID) return 1;
+            const videoCountA = parseInt(a.channelData.statistics.videoCount, 10);
+            const videoCountB = parseInt(b.channelData.statistics.videoCount, 10);
+            return videoCountB - videoCountA;
+        });
+        
+        exportAnalysesToHTML(selectedAnalyses, allChannelsData);
+    };
+
+    const handleNewAnalysisClick = () => {
+        setIsControlsOpen(true);
+        if (mainContentRef.current) {
+            mainContentRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+    };
+    
+    const showTerminal = isLoading || isGeneratingSummary || (analysisJustCompleted && progressSteps.length > 0);
 
 
     return (
-        <div className="min-h-screen bg-wnet-dark font-sans">
-            <div className="flex">
-                <HistorySidebar 
-                    history={analysisHistory} 
-                    currentId={currentAnalysisId} 
-                    onSelect={handleSelectAnalysis} 
-                />
-                <div className="flex-1 p-4 sm:p-6 lg:p-8">
-                    <div className="max-w-7xl mx-auto">
-                        <header className="text-center mb-8">
-                            <WnetLogo className="h-12 mx-auto mb-4" />
-                            <div className="flex justify-center items-center gap-4 mb-2">
-                                <h1 className="text-3xl sm:text-4xl lg:text-5xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-wnet-yellow to-amber-500">
-                                   WYGRAJ YOUTUBE z AI!
-                                </h1>
-                                 <SparklesIcon className="h-10 w-10 text-yellow-400" />
+        <div className="h-screen bg-wnet-dark font-sans flex flex-col overflow-hidden">
+            <div className="flex flex-1 min-h-0">
+                <aside
+                    style={{ width: isSidebarMinimized ? '72px' : `${sidebarWidth}px`, transition: isResizing.current ? 'none' : 'width 0.2s ease-in-out' }}
+                    className="bg-neutral-900/80 border-r border-neutral-800 flex flex-col flex-shrink-0 relative"
+                >
+                    {isSidebarMinimized ? (
+                        <MinimizedSidebar 
+                            stats={gamificationStats} 
+                            onExport={handleExport} 
+                            onToggle={() => setIsSidebarMinimized(false)}
+                            history={analysisHistory}
+                        />
+                    ) : (
+                        <div className="p-4 h-full flex flex-col overflow-y-auto">
+                            <Scoreboard 
+                                stats={gamificationStats} 
+                                history={analysisHistory}
+                                onSelectAnalysis={handleSelectAnalysis}
+                            />
+                            <div className="flex-1 flex flex-col min-h-0">
+                                <HistorySidebar 
+                                    history={analysisHistory} 
+                                    currentId={currentAnalysisId} 
+                                    onSelect={handleSelectAnalysis}
+                                    onSelectVideo={handleSelectVideoFromHistory}
+                                    selectedIds={selectedHistoryIds}
+                                    onToggleSelect={handleToggleSelection}
+                                    onExport={handleExport}
+                                />
                             </div>
-                            <p className="text-slate-400 text-lg">
-                               Analizuj kanał Radio Wnet lub ucz się od konkurentów!
-                            </p>
-                        </header>
+                        </div>
+                    )}
+                    
+                    {!isSidebarMinimized && (
+                        <button 
+                            onClick={() => setIsSidebarMinimized(true)} 
+                            className="absolute top-4 -right-[10px] z-10 w-6 h-6 bg-neutral-700 hover:bg-wnet-yellow text-white hover:text-black rounded-full flex items-center justify-center transition-colors"
+                            title="Zminimalizuj panel"
+                        >
+                            <ChevronDoubleLeftIcon className="h-4 w-4" />
+                        </button>
+                    )}
+                </aside>
+                
+                {!isSidebarMinimized && (
+                    <div
+                        onMouseDown={handleResizeMouseDown}
+                        className="w-1.5 cursor-col-resize bg-neutral-800 hover:bg-wnet-yellow transition-colors flex-shrink-0"
+                        title="Zmień szerokość panelu"
+                    />
+                )}
+
+                <div ref={mainContentRef} className="flex-1 overflow-y-auto">
+                    <div className="max-w-7xl mx-auto p-4 sm:p-6 lg:p-8">
+                        <Controls
+                            ref={headerRef}
+                            onFetch={handleFetchStats} 
+                            isLoading={isLoading || isGeneratingSummary}
+                            startDate={startDate}
+                            setStartDate={setStartDate}
+                            endDate={endDate}
+                            setEndDate={setEndDate}
+                            channelId={channelId}
+                            setChannelId={setChannelId}
+                            predefinedChannels={PREDEFINED_CHANNELS}
+                            isOpen={isControlsOpen}
+                            setIsOpen={setIsControlsOpen}
+                        />
                         
                         <main>
                             {selectedVideo ? (
                                 <VideoDetailView 
                                     video={selectedVideo} 
-                                    apiKey={apiKey} 
                                     onBack={handleClearSelectedVideo} 
-                                    cachedData={videoAnalysisCache[selectedVideo.id]}
+                                    cachedData={currentAnalysis?.analyzedVideos?.[selectedVideo.id]}
                                     onDataLoaded={(data) => handleVideoDataLoaded(selectedVideo.id, data)}
-                                    elevenLabsApiKey={elevenLabsApiKey}
                                 />
                             ) : (
                                 <>
-                                    <div className="max-w-3xl mx-auto bg-neutral-900/50 border border-neutral-800 rounded-xl p-6 shadow-lg mb-6 space-y-4">
-                                        <div>
-                                            <label htmlFor="api-key-input" className="flex items-center text-sm font-medium text-slate-400 mb-2">
-                                                <KeyIcon className="h-5 w-5 mr-2" />
-                                                Klucz YouTube Data API
-                                            </label>
-                                            <input
-                                                id="api-key-input"
-                                                type="password"
-                                                value={apiKey}
-                                                onChange={(e) => setApiKey(e.target.value)}
-                                                placeholder="Wprowadź swój klucz API..."
-                                                className="w-full bg-neutral-800 border-2 border-neutral-700 rounded-lg text-slate-200 px-4 py-2 focus:outline-none focus:ring-2 focus:ring-wnet-yellow/50 focus:border-wnet-yellow transition"
+                                    {showTerminal && (
+                                        <div className="mb-8">
+                                            <AnalysisProgress 
+                                                key={currentAnalysis?.id}
+                                                steps={progressSteps} 
+                                                title="ANALIZA KANAŁU"
+                                                showBootSequence={true}
+                                                isHumanInputEnabled={analysisJustCompleted && !isGeneratingSummary && !isLoading && !!currentAnalysis?.aiSummary}
+                                                onHumanInputCommand={handleHumanInput}
                                             />
-                                            {!apiKey && (
-                                                <p className="text-xs text-slate-500 mt-2">
-                                                    Klucz jest wymagany do pobierania danych. Jest przechowywany tylko w Twojej przeglądarce. <a href="https://developers.google.com/youtube/v3/getting-started" target="_blank" rel="noopener noreferrer" className="text-wnet-yellow hover:underline">Jak uzyskać klucz?</a>
-                                                </p>
-                                            )}
-                                        </div>
-                                        <div>
-                                            <label htmlFor="elevenlabs-api-key-input" className="flex items-center text-sm font-medium text-slate-400 mb-2">
-                                                <AudioWaveIcon className="h-5 w-5 mr-2" />
-                                                Klucz API ElevenLabs (Opcjonalny)
-                                            </label>
-                                            <input
-                                                id="elevenlabs-api-key-input"
-                                                type="password"
-                                                value={elevenLabsApiKey}
-                                                onChange={(e) => setElevenLabsApiKey(e.target.value)}
-                                                placeholder="Wprowadź klucz do syntezy mowy..."
-                                                className="w-full bg-neutral-800 border-2 border-neutral-700 rounded-lg text-slate-200 px-4 py-2 focus:outline-none focus:ring-2 focus:ring-wnet-yellow/50 focus:border-wnet-yellow transition"
-                                            />
-                                            {!elevenLabsApiKey && (
-                                                <p className="text-xs text-slate-500 mt-2">
-                                                    Klucz jest wymagany do odsłuchania analiz. <a href="https://elevenlabs.io/" target="_blank" rel="noopener noreferrer" className="text-wnet-yellow hover:underline">Jak uzyskać klucz?</a>
-                                                </p>
-                                            )}
-                                        </div>
-                                    </div>
-
-                                    <ChannelInput 
-                                        onFetch={handleFetchStats} 
-                                        isLoading={isLoading || isGeneratingSummary}
-                                        startDate={startDate}
-                                        setStartDate={setStartDate}
-                                        endDate={endDate}
-                                        setEndDate={setEndDate}
-                                        channelId={channelId}
-                                        setChannelId={setChannelId}
-                                        predefinedChannels={PREDEFINED_CHANNELS}
-                                        apiKey={apiKey}
-                                    />
-                                    
-                                    {(isLoading || isGeneratingSummary) && (
-                                        <div className="max-w-3xl mx-auto mt-6">
-                                            <AnalysisProgress steps={progressSteps} />
                                         </div>
                                     )}
 
@@ -417,7 +682,7 @@ const App: React.FC = () => {
                                     {isLoading && !currentAnalysis && <LoadingSkeleton />}
 
                                     {!isLoading && currentAnalysis && (
-                                        <div className="mt-8 space-y-12">
+                                        <div className="space-y-12">
                                             
                                             <ChannelHeader channel={currentAnalysis.channelData} />
 
@@ -425,6 +690,8 @@ const App: React.FC = () => {
                                                 hasVideos={currentAnalysis.videoData.longForm.length > 0}
                                                 hasShorts={currentAnalysis.videoData.shorts.length > 0}
                                                 hasLiveStreams={currentAnalysis.videoData.liveStreams.length > 0}
+                                                hasAiSummary={!!(isGeneratingSummary || currentAnalysis.aiSummary)}
+                                                stickyTop={headerHeight}
                                             />
                                             
                                             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -437,7 +704,7 @@ const App: React.FC = () => {
                                                         <div className="text-center text-slate-500">
                                                             <div className="bg-neutral-900/50 p-8 rounded-lg max-w-md mx-auto">
                                                                 <h3 className="text-xl font-bold text-slate-300 mb-2">Nie Znaleziono Filmów</h3>
-                                                                <p>Nie znaleziono standardowych filmów (innych niż Shorts) dla tego kanału w wybranym zakresie dat.</p>
+                                                                <p>Nie znaleziono standardowych filmów (innych niż Shorts) dla tego kanalu w wybranym zakresie dat.</p>
                                                             </div>
                                                         </div>
                                                     )}
@@ -457,7 +724,7 @@ const App: React.FC = () => {
 
                                                 <aside className="lg:col-span-1">
                                                     {(isGeneratingSummary || currentAnalysis.aiSummary) && (
-                                                        <div className="sticky top-8">
+                                                        <div id="ai-summary-section" className="sticky top-28 scroll-mt-28">
                                                             <AISummary 
                                                                 summary={currentAnalysis.aiSummary || ''} 
                                                                 lectorSummary={currentAnalysis.lectorSummary || ''}
@@ -466,7 +733,6 @@ const App: React.FC = () => {
                                                                 channelName={currentAnalysis.channelName}
                                                                 updateChangelog={updateChangelog}
                                                                 onDismissChangelog={() => setUpdateChangelog(null)}
-                                                                elevenLabsApiKey={elevenLabsApiKey}
                                                             />
                                                         </div>
                                                     )}
@@ -475,7 +741,7 @@ const App: React.FC = () => {
                                         </div>
                                     )}
 
-                                    {!isLoading && !currentAnalysis && !isGeneratingSummary && (
+                                    {!currentAnalysis && !showTerminal && (
                                         <div className="text-center mt-12 text-slate-500">
                                             <div className="bg-neutral-900/50 p-8 rounded-lg max-w-md mx-auto">
                                                 <h3 className="text-xl font-bold text-slate-300 mb-2">Gotowy do analizy?</h3>
@@ -486,13 +752,10 @@ const App: React.FC = () => {
                                 </>
                             )}
                         </main>
-
-                        <footer className="text-center mt-12 text-slate-500 text-sm">
-                            <p>Oparte na YouTube Data API i Google Gemini</p>
-                        </footer>
                     </div>
                 </div>
             </div>
+             <Footer onNewAnalysisClick={handleNewAnalysisClick} />
         </div>
     );
 };

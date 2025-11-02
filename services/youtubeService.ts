@@ -2,13 +2,14 @@ import type { Channel, Video, CommentThread } from '../types';
 import { parseISO8601Duration } from '../utils';
 
 const API_BASE_URL = 'https://www.googleapis.com/youtube/v3';
+const YOUTUBE_API_KEY = 'AIzaSyBtOQB0ZzBCR32R9njHzDfLfdn_yOgNym0';
 
 const handleApiError = async (response: Response) => {
     if (!response.ok) {
         const errorData = await response.json();
         const errorMessage = errorData.error?.message || 'Wystąpił nieznany błąd API.';
         if (errorMessage.includes('key invalid')) {
-             throw new Error("Podany klucz API YouTube jest nieprawidłowy.");
+             throw new Error("Klucz API YouTube jest nieprawidłowy lub nieaktywny.");
         }
         if (errorMessage.includes('not found')) {
             throw new Error("Nie znaleziono kanału o podanym ID.");
@@ -16,13 +17,16 @@ const handleApiError = async (response: Response) => {
         if(errorMessage.includes('quotaExceeded')) {
             throw new Error("Przekroczono limit zapytań API YouTube. Spróbuj ponownie później.");
         }
+        if (errorMessage.includes('comments are disabled')) {
+             throw new Error("disabled comments");
+        }
         throw new Error(errorMessage);
     }
     return response.json();
 }
 
-export const getChannelStats = async (apiKey: string, channelId: string): Promise<Channel> => {
-    const url = `${API_BASE_URL}/channels?part=snippet,statistics,brandingSettings&id=${channelId}&key=${apiKey}`;
+export const getChannelStats = async (channelId: string): Promise<Channel> => {
+    const url = `${API_BASE_URL}/channels?part=snippet,statistics,brandingSettings&id=${channelId}&key=${YOUTUBE_API_KEY}`;
     const response = await fetch(url);
     const data = await handleApiError(response);
     if (!data.items || data.items.length === 0) {
@@ -31,7 +35,7 @@ export const getChannelStats = async (apiKey: string, channelId: string): Promis
     return data.items[0];
 };
 
-export const getChannelVideos = async (apiKey: string, channelId: string, startDate: string, endDate: string): Promise<{ longForm: Video[], shorts: Video[], liveStreams: Video[] }> => {
+export const getChannelVideos = async (channelId: string, startDate: string, endDate: string): Promise<{ longForm: Video[], shorts: Video[], liveStreams: Video[] }> => {
     const videoIds: string[] = [];
     let nextPageToken: string | undefined = undefined;
 
@@ -48,7 +52,7 @@ export const getChannelVideos = async (apiKey: string, channelId: string, startD
         searchUrl.searchParams.set('publishedBefore', endDateISOString);
         searchUrl.searchParams.set('type', 'video');
         searchUrl.searchParams.set('maxResults', '50');
-        searchUrl.searchParams.set('key', apiKey);
+        searchUrl.searchParams.set('key', YOUTUBE_API_KEY);
         if (nextPageToken) {
             searchUrl.searchParams.set('pageToken', nextPageToken);
         }
@@ -68,7 +72,7 @@ export const getChannelVideos = async (apiKey: string, channelId: string, startD
     const allVideos: Video[] = [];
     for (let i = 0; i < videoIds.length; i += 50) {
         const chunkIds = videoIds.slice(i, i + 50);
-        const detailsUrl = `${API_BASE_URL}/videos?part=snippet,contentDetails,statistics,liveStreamingDetails&id=${chunkIds.join(',')}&key=${apiKey}`;
+        const detailsUrl = `${API_BASE_URL}/videos?part=snippet,contentDetails,statistics,liveStreamingDetails&id=${chunkIds.join(',')}&key=${YOUTUBE_API_KEY}`;
         
         const response = await fetch(detailsUrl);
         const data = await handleApiError(response);
@@ -108,8 +112,8 @@ export const getChannelVideos = async (apiKey: string, channelId: string, startD
     return { longForm, shorts, liveStreams };
 };
 
-export const getVideoComments = async (apiKey: string, videoId: string): Promise<CommentThread[]> => {
-    const url = `${API_BASE_URL}/commentThreads?part=snippet&videoId=${videoId}&order=relevance&maxResults=10&key=${apiKey}`;
+export const getVideoComments = async (videoId: string): Promise<CommentThread[]> => {
+    const url = `${API_BASE_URL}/commentThreads?part=snippet&videoId=${videoId}&order=relevance&maxResults=30&key=${YOUTUBE_API_KEY}`;
     try {
         const response = await fetch(url);
         const data = await handleApiError(response);

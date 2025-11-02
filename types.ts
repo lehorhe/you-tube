@@ -88,6 +88,13 @@ export interface CommentThread {
     };
 }
 
+export interface AnalyzedVideo {
+    video: Video;
+    summary: string;
+    lectorSummary: string;
+    comments: CommentThread[];
+}
+
 // New type for storing analysis results
 export interface AnalysisResult {
     id: string;
@@ -100,4 +107,5 @@ export interface AnalysisResult {
     isComparative: boolean;
     channelName: string;
     integratedVideoIds: string[];
+    analyzedVideos?: { [videoId: string]: AnalyzedVideo };
 }

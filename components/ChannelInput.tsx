@@ -10,16 +10,15 @@ interface ChannelInputProps {
     channelId: string;
     setChannelId: (id: string) => void;
     predefinedChannels: { id: string; name: string }[];
-    apiKey: string;
 }
 
-type Preset = 'last7' | 'last30' | 'thisMonth' | 'lastMonth';
+type Preset = 'today' | 'yesterday' | 'lastWeek' | 'last7' | 'last30' | 'thisMonth' | 'lastMonth';
 
 const ChannelInput: React.FC<ChannelInputProps> = ({ 
     onFetch, isLoading,
     startDate, setStartDate,
     endDate, setEndDate,
-    channelId, setChannelId, predefinedChannels, apiKey
+    channelId, setChannelId, predefinedChannels
  }) => {
     const [activePreset, setActivePreset] = useState<Preset | null>('last7');
 
@@ -29,9 +28,27 @@ const ChannelInput: React.FC<ChannelInputProps> = ({
         setActivePreset(preset);
         const now = new Date();
         let newStartDate: Date;
-        const newEndDate = new Date(now);
+        let newEndDate = new Date(now);
 
         switch (preset) {
+            case 'today':
+                newStartDate = new Date();
+                break;
+            case 'yesterday':
+                newStartDate = new Date();
+                newStartDate.setDate(now.getDate() - 1);
+                newEndDate = new Date(newStartDate);
+                break;
+             case 'lastWeek':
+                const today = new Date();
+                const dayOfWeek = today.getDay(); // 0 (Sun) to 6 (Sat)
+                const lastSaturday = new Date(today);
+                lastSaturday.setDate(today.getDate() - (dayOfWeek + 1) % 7);
+                const lastSunday = new Date(lastSaturday);
+                lastSunday.setDate(lastSaturday.getDate() - 6);
+                newStartDate = lastSunday;
+                newEndDate = lastSaturday;
+                break;
             case 'last7':
                 newStartDate = new Date();
                 newStartDate.setDate(now.getDate() - 7);
@@ -45,7 +62,7 @@ const ChannelInput: React.FC<ChannelInputProps> = ({
                 break;
             case 'lastMonth':
                 newStartDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-                newEndDate.setDate(0); // Sets date to last day of previous month
+                newEndDate = new Date(now.getFullYear(), now.getMonth(), 0);
                 break;
         }
         
@@ -55,32 +72,7 @@ const ChannelInput: React.FC<ChannelInputProps> = ({
     
     // Clear active preset if dates are changed manually
     useEffect(() => {
-        // A simple heuristic to check if the current dates match any preset.
-        // This is not foolproof but works for this component's logic.
-        // A more robust solution might involve storing the calculated preset dates.
-        const now = new Date();
-        const start = new Date(startDate);
-        const end = new Date(endDate);
-        
-        // Add a day to `end` for comparison to make it inclusive
-        const endInclusive = new Date(end);
-        endInclusive.setDate(endInclusive.getDate() + 1);
-
-        const diffTime = Math.abs(endInclusive.getTime() - start.getTime());
-        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
-        if (toISODateString(end) === toISODateString(now)) {
-             if (diffDays === 8) { // 7 days ago to today is 8 days inclusive of start/end
-                if (activePreset !== 'last7') setActivePreset('last7');
-                return;
-            }
-            if (diffDays === 31) {
-                if (activePreset !== 'last30') setActivePreset('last30');
-                return;
-            }
-        }
         setActivePreset(null);
-
     }, [startDate, endDate]);
 
 
@@ -90,6 +82,9 @@ const ChannelInput: React.FC<ChannelInputProps> = ({
     };
 
     const presetButtons: { key: Preset, label: string }[] = [
+        { key: 'today', label: 'Dzisiaj' },
+        { key: 'yesterday', label: 'Wczoraj' },
+        { key: 'lastWeek', label: 'Ostatni tydzień' },
         { key: 'last7', label: 'Ostatnie 7 dni' },
         { key: 'last30', label: 'Ostatnie 30 dni' },
         { key: 'thisMonth', label: 'Ten miesiąc' },
@@ -97,7 +92,7 @@ const ChannelInput: React.FC<ChannelInputProps> = ({
     ];
 
     return (
-        <form onSubmit={handleSubmit} className="max-w-3xl mx-auto bg-neutral-900/50 border border-neutral-800 rounded-xl p-6 shadow-lg">
+        <form onSubmit={handleSubmit} className="max-w-3xl mx-auto bg-neutral-900/50 border border-neutral-800 rounded-xl p-6 shadow-lg mb-6">
             <div className="mb-6">
                 <label htmlFor="channel-select" className="block text-sm font-medium text-slate-400 mb-2">Wybierz Kanał</label>
                  <div className="relative">
@@ -105,7 +100,7 @@ const ChannelInput: React.FC<ChannelInputProps> = ({
                         id="channel-select"
                         value={channelId}
                         onChange={(e) => setChannelId(e.target.value)}
-                        disabled={isLoading || !apiKey}
+                        disabled={isLoading}
                         className="w-full appearance-none bg-neutral-800 border-2 border-neutral-700 rounded-lg text-slate-200 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-wnet-yellow/50 focus:border-wnet-yellow transition cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
                     >
                         {predefinedChannels.map(channel => (
@@ -130,7 +125,7 @@ const ChannelInput: React.FC<ChannelInputProps> = ({
                             key={key}
                             type="button"
                             onClick={() => handlePresetSelect(key)}
-                            disabled={isLoading || !apiKey}
+                            disabled={isLoading}
                             className={`px-4 py-1.5 rounded-full font-medium transition-all duration-200 text-xs focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-wnet-dark focus:ring-wnet-yellow ${
                                 activePreset === key
                                     ? 'bg-wnet-yellow text-black'
@@ -149,7 +144,7 @@ const ChannelInput: React.FC<ChannelInputProps> = ({
                             value={startDate}
                             onChange={(e) => setStartDate(e.target.value)}
                             className="w-full bg-neutral-800 border-2 border-neutral-700 rounded-lg text-slate-200 px-4 py-2 focus:outline-none focus:ring-2 focus:ring-wnet-yellow/50 focus:border-wnet-yellow transition disabled:opacity-50"
-                            disabled={isLoading || !apiKey}
+                            disabled={isLoading}
                         />
                     </div>
                     <div>
@@ -159,7 +154,7 @@ const ChannelInput: React.FC<ChannelInputProps> = ({
                             value={endDate}
                             onChange={(e) => setEndDate(e.target.value)}
                             className="w-full bg-neutral-800 border-2 border-neutral-700 rounded-lg text-slate-200 px-4 py-2 focus:outline-none focus:ring-2 focus:ring-wnet-yellow/50 focus:border-wnet-yellow transition disabled:opacity-50"
-                            disabled={isLoading || !apiKey}
+                            disabled={isLoading}
                         />
                     </div>
                 </div>
@@ -167,7 +162,7 @@ const ChannelInput: React.FC<ChannelInputProps> = ({
             
             <button
                 type="submit"
-                disabled={isLoading || !channelId || !apiKey}
+                disabled={isLoading || !channelId}
                 className="w-full flex items-center justify-center bg-wnet-yellow hover:opacity-90 disabled:bg-neutral-600 disabled:cursor-not-allowed text-black font-bold rounded-full px-6 py-3 transition-all duration-300 shadow-md"
             >
                 {isLoading ? (

@@ -1,8 +1,7 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { SparklesIcon, ShareIcon, PlayIcon, StopIcon, LoadingSpinnerIcon, DownloadIcon, AudioWaveIcon } from './icons';
+import React from 'react';
+import { SparklesIcon, OpenInNewIcon, AudioWaveIcon } from './icons';
 import UpdateNotification from './UpdateNotification';
-import { exportToPdf, exportToGoogleDocs, sendToSlack } from '../services/exportService';
-import { getAudioData } from '../services/elevenLabsService';
+import { exportToGoogleDocs } from '../services/exportService';
 
 interface AISummaryProps {
     summary: string;
@@ -12,109 +11,10 @@ interface AISummaryProps {
     channelName: string;
     updateChangelog?: string | null;
     onDismissChangelog?: () => void;
-    elevenLabsApiKey: string;
 }
 
-type AudioState = 'idle' | 'loading' | 'playing' | 'error';
-
-const AISummary: React.FC<AISummaryProps> = ({ summary, lectorSummary, isLoading, isUpdating, channelName, updateChangelog, onDismissChangelog, elevenLabsApiKey }) => {
-    const [isMenuOpen, setIsMenuOpen] = useState(false);
-    const [copyStatus, setCopyStatus] = useState('');
-    const [audioState, setAudioState] = useState<AudioState>('idle');
-    const [audioData, setAudioData] = useState<ArrayBuffer | null>(null);
-    const [audioUrl, setAudioUrl] = useState<string | null>(null);
-    const audioPlayerRef = useRef<HTMLAudioElement>(null);
-
-    // Cleanup Blob URL when component unmounts or URL changes
-    useEffect(() => {
-        const currentUrl = audioUrl;
-        return () => {
-            if (currentUrl) {
-                URL.revokeObjectURL(currentUrl);
-            }
-        };
-    }, [audioUrl]);
-
-    // Reset state when summary or lector summary changes
-    useEffect(() => {
-        setAudioData(null);
-        setAudioUrl(null); 
-        setAudioState('idle');
-        if (audioPlayerRef.current) {
-            audioPlayerRef.current.pause();
-            audioPlayerRef.current.src = '';
-        }
-    }, [summary, lectorSummary]);
-
-    const handlePlayAudio = async () => {
-        if (!audioPlayerRef.current) return;
-
-        if (audioState === 'playing') {
-            audioPlayerRef.current.pause();
-            return;
-        }
-
-        if (audioState === 'loading') {
-            return; // Do nothing while loading
-        }
-        
-        // Use lectorSummary for audio generation
-        if (!lectorSummary) {
-             console.log("No lector summary available to play.");
-             return;
-        }
-
-        // If we already have the URL, just play
-        if (audioUrl) {
-            audioPlayerRef.current.play();
-            return;
-        }
-
-        if (!elevenLabsApiKey) {
-            alert("Proszę podać klucz API ElevenLabs w ustawieniach.");
-            return;
-        }
-
-        setAudioState('loading');
-        try {
-            const data = await getAudioData(lectorSummary, elevenLabsApiKey);
-            setAudioData(data); // for download
-            const blob = new Blob([data], { type: 'audio/mpeg' });
-            const url = URL.createObjectURL(blob);
-            setAudioUrl(url); // This will trigger the useEffect below
-        } catch (error) {
-            console.error(error);
-            setAudioState('error');
-            setTimeout(() => setAudioState('idle'), 3000);
-        }
-    };
+const AISummary: React.FC<AISummaryProps> = ({ summary, lectorSummary, isLoading, isUpdating, channelName, updateChangelog, onDismissChangelog }) => {
     
-    // This effect triggers playback once the audio URL is ready
-    useEffect(() => {
-        if (audioUrl && audioPlayerRef.current) {
-            audioPlayerRef.current.src = audioUrl;
-            audioPlayerRef.current.play().catch(e => {
-                console.error("Audio playback failed:", e);
-                setAudioState('error');
-            });
-        }
-    }, [audioUrl]);
-
-
-    const handleDownloadAudio = () => {
-        if (!audioData) return;
-
-        const blob = new Blob([audioData], { type: 'audio/mpeg' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `analiza_${channelName.replace(/ /g, '_')}.mp3`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-    };
-
     // A more robust markdown-to-HTML converter for better formatting
     const renderMarkdown = (text: string) => {
         let html = text
@@ -174,39 +74,8 @@ const AISummary: React.FC<AISummaryProps> = ({ summary, lectorSummary, isLoading
          );
     }
     
-    const getPlayButton = () => {
-        const isDisabled = !elevenLabsApiKey || isLoading || isUpdating || !lectorSummary;
-        let title = "Odsłuchaj analizę";
-        if (!elevenLabsApiKey) title = "Dodaj klucz API ElevenLabs, aby odsłuchać";
-        if (elevenLabsApiKey && !lectorSummary) title = "Brak streszczenia do odsłuchania";
-
-
-        switch (audioState) {
-            case 'loading':
-                title = "Generowanie audio...";
-                return <button title={title} disabled className="text-slate-400"><LoadingSpinnerIcon className="h-6 w-6" /></button>;
-            case 'playing':
-                 title = "Zatrzymaj odtwarzanie";
-                return <button title={title} onClick={handlePlayAudio} className="text-slate-400 hover:text-white transition-colors"><StopIcon className="h-6 w-6" /></button>;
-            case 'error':
-                 title = "Błąd generowania audio";
-                return <button title={title} disabled className="text-red-500"><StopIcon className="h-6 w-6" /></button>;
-            case 'idle':
-            default:
-                return <button title={title} onClick={handlePlayAudio} disabled={isDisabled} className="text-slate-400 enabled:hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"><PlayIcon className="h-6 w-6" /></button>;
-        }
-    }
-    
     return (
         <div className="bg-neutral-900/50 border border-neutral-800 p-6 rounded-lg backdrop-blur-sm">
-            <audio 
-                ref={audioPlayerRef}
-                onPlay={() => setAudioState('playing')}
-                onPause={() => setAudioState('idle')}
-                onEnded={() => setAudioState('idle')}
-                onError={() => setAudioState('error')}
-                hidden
-            />
             <div className="flex items-center justify-between gap-3 mb-4">
                 <div className="flex items-center gap-3">
                     <SparklesIcon className="h-6 w-6 text-yellow-400" />
@@ -222,41 +91,13 @@ const AISummary: React.FC<AISummaryProps> = ({ summary, lectorSummary, isLoading
                             Aktualizuję...
                         </div>
                     )}
-                     <div className="relative">
-                        <button 
-                            onClick={() => setIsMenuOpen(!isMenuOpen)}
-                            className="text-slate-400 hover:text-white transition-colors"
-                            aria-label="Eksportuj lub udostępnij analizę"
-                        >
-                            <ShareIcon className="h-6 w-6" />
-                        </button>
-                        {isMenuOpen && (
-                            <div className="absolute right-0 mt-2 w-64 bg-neutral-800 border border-neutral-700 rounded-lg shadow-xl z-10">
-                                <ul className="p-2 text-sm text-slate-200">
-                                    <li className="px-3 py-1.5 text-xs font-semibold text-slate-400">Eksportuj & Udostępnij</li>
-                                    <li 
-                                        onClick={() => { exportToPdf('ai-summary-content', channelName); setIsMenuOpen(false); }}
-                                        className="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-neutral-700 cursor-pointer"
-                                    >
-                                        <span>Eksportuj do PDF</span>
-                                    </li>
-                                    <li 
-                                        onClick={() => { exportToGoogleDocs('ai-summary-content', channelName); setIsMenuOpen(false); }}
-                                        className="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-neutral-700 cursor-pointer"
-                                    >
-                                        <span>Otwórz w karcie (dla Google Docs)</span>
-                                    </li>
-                                    <li 
-                                        onClick={() => { sendToSlack(summary); setCopyStatus('Skopiowano!'); setIsMenuOpen(false); setTimeout(() => setCopyStatus(''), 2000); }}
-                                        className="flex items-center justify-between gap-3 px-3 py-2 rounded-md hover:bg-neutral-700 cursor-pointer"
-                                    >
-                                        <span>Kopiuj do schowka (dla Slack)</span>
-                                        {copyStatus && <span className="text-xs text-green-400">{copyStatus}</span>}
-                                    </li>
-                                </ul>
-                            </div>
-                        )}
-                    </div>
+                     <button 
+                        onClick={() => exportToGoogleDocs('ai-summary-content', channelName)}
+                        className="text-slate-400 hover:text-white transition-colors"
+                        title="Otwórz w nowej karcie (dla Google Docs)"
+                    >
+                        <OpenInNewIcon className="h-6 w-6" />
+                    </button>
                 </div>
             </div>
 
@@ -275,14 +116,6 @@ const AISummary: React.FC<AISummaryProps> = ({ summary, lectorSummary, isLoading
                         <div className='flex items-center gap-2'>
                            <AudioWaveIcon className="h-5 w-5 text-slate-400"/>
                            <h4 className="font-bold text-slate-300">Streszczenie dla Lektora</h4>
-                        </div>
-                         <div className="flex items-center gap-2">
-                            {getPlayButton()}
-                            {audioData && (
-                                <button title="Pobierz plik audio" onClick={handleDownloadAudio} className="text-slate-400 hover:text-white transition-colors">
-                                    <DownloadIcon className="h-5 w-5" />
-                                </button>
-                            )}
                         </div>
                     </div>
                     <p className="text-sm text-slate-400 italic">{lectorSummary}</p>

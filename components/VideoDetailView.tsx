@@ -1,64 +1,113 @@
-import React, { useState, useEffect } from 'react';
-import type { Video, CommentThread } from '../types';
+import React, { useState, useEffect, useCallback } from 'react';
+import type { Video, CommentThread, AnalyzedVideo } from '../types';
 import { getVideoComments } from '../services/youtubeService';
-import { generateVideoSummary, generateLectorSummary } from '../services/geminiService';
+import { generateVideoSummary, generateLectorSummary, refineAnalysis } from '../services/geminiService';
 import { formatNumber } from '../utils';
 import { LikesIcon, CommentsIcon, ViewsIcon, PlayButtonIcon } from './icons';
 import AISummary from './AISummary';
+import AnalysisProgress from './AnalysisProgress';
 
 interface VideoDetailViewProps {
     video: Video;
-    apiKey: string;
     onBack: () => void;
-    cachedData?: { comments: CommentThread[]; summary: string; lectorSummary: string; };
-    onDataLoaded: (data: { comments: CommentThread[]; summary: string; lectorSummary: string; }) => void;
-    elevenLabsApiKey: string;
+    cachedData?: AnalyzedVideo;
+    onDataLoaded: (data: AnalyzedVideo) => void;
 }
 
-const VideoDetailView: React.FC<VideoDetailViewProps> = ({ video, apiKey, onBack, cachedData, onDataLoaded, elevenLabsApiKey }) => {
-    const [comments, setComments] = useState<CommentThread[]>([]);
-    const [summary, setSummary] = useState<string | null>(null);
-    const [lectorSummary, setLectorSummary] = useState<string | null>(null);
-    const [isLoading, setIsLoading] = useState(true);
+const VideoDetailView: React.FC<VideoDetailViewProps> = ({ video, onBack, cachedData, onDataLoaded }) => {
+    const [comments, setComments] = useState<CommentThread[] | null>(cachedData?.comments ?? null);
+    const [summary, setSummary] = useState<string | null>(cachedData?.summary ?? null);
+    const [lectorSummary, setLectorSummary] = useState<string | null>(cachedData?.lectorSummary ?? null);
+    const [isSummaryLoading, setIsSummaryLoading] = useState(!cachedData);
+    const [isRefining, setIsRefining] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [progressSteps, setProgressSteps] = useState<string[]>([]);
+    
+    const addProgressStep = useCallback((message: string) => {
+        setProgressSteps(prev => [...prev, message]);
+    }, []);
 
     useEffect(() => {
         const fetchData = async () => {
             if (cachedData) {
-                // Cache hit: Use cached data
-                setComments(cachedData.comments);
-                setSummary(cachedData.summary);
-                setLectorSummary(cachedData.lectorSummary);
-                setIsLoading(false);
                 return;
             }
 
-            // Cache miss: Fetch new data
-            setIsLoading(true);
+            setIsSummaryLoading(true);
             setError(null);
+            setProgressSteps([]);
+            
             try {
-                const fetchedComments = await getVideoComments(apiKey, video.id);
-                const generatedSummary = await generateVideoSummary(video, fetchedComments);
-                const generatedLectorSummary = await generateLectorSummary(generatedSummary);
-                
+                addProgressStep('Inicjuję analizę wideo...');
+                addProgressStep('Pobieram komentarze...');
+                const fetchedComments = await getVideoComments(video.id);
                 setComments(fetchedComments);
+                addProgressStep(`[ OK ] Pobrano ${fetchedComments.length} najistotniejszych komentarzy.`);
+                addProgressStep('-----------------------------------------');
+                addProgressStep('Rozpoczynam generowanie analizy AI...');
+                addProgressStep('Prompt to zestaw instrukcji dla modelu językowego.');
+                addProgressStep(`Konstruuję zapytanie (prompt) dla modelu Gemini. Wybrany szablon: Analiza Pojedynczego Wideo.`);
+                addProgressStep(`Wypełniam prompt danymi (kontekstem): Tytuł='${video.snippet.title.substring(0,30)}...', Liczba Komentarzy=${fetchedComments.length}`);
+                addProgressStep("Wysyłam zapytanie do Google Gemini (model: gemini-2.5-pro)...");
+                
+                const generatedSummary = await generateVideoSummary(video, fetchedComments);
+                addProgressStep('[ OK ] Model AI zakończył generowanie. Otrzymano odpowiedź.');
+                
+                addProgressStep('Generuję podsumowanie dla lektora...');
+                const generatedLectorSummary = await generateLectorSummary(generatedSummary);
+                addProgressStep('[ OK ] Streszczenie dla lektora wygenerowane.');
+                
                 setSummary(generatedSummary);
                 setLectorSummary(generatedLectorSummary);
+                
+                addProgressStep('Zakończono. Wyświetlam pełny raport.');
 
-                // Update the parent's cache
-                onDataLoaded({ comments: fetchedComments, summary: generatedSummary, lectorSummary: generatedLectorSummary });
+                onDataLoaded({ video, comments: fetchedComments, summary: generatedSummary, lectorSummary: generatedLectorSummary });
 
             } catch (err) {
                 const errorMessage = err instanceof Error ? err.message : "Wystąpił nieznany błąd.";
                 setError(`Nie udało się wczytać szczegółów wideo: ${errorMessage}`);
+                addProgressStep(`BŁĄD KRYTYCZNY: ${errorMessage}`);
                 console.error(err);
             } finally {
-                setIsLoading(false);
+                setIsSummaryLoading(false);
             }
         };
 
         fetchData();
-    }, [video, apiKey, cachedData, onDataLoaded]);
+    }, [video, cachedData, onDataLoaded, addProgressStep]);
+    
+    const handleHumanInputForVideo = useCallback(async (command: string) => {
+        if (!summary) return;
+        
+        setIsRefining(true);
+        addProgressStep(`> ${command}`);
+        addProgressStep("Przetwarzam polecenie człowieka dla analizy wideo...");
+
+        try {
+            const refinedSummary = await refineAnalysis(summary, command);
+            addProgressStep("[ OK ] Otrzymano zaktualizowaną analizę wideo.");
+
+            const refinedLectorSummary = await generateLectorSummary(refinedSummary);
+            addProgressStep("[ OK ] Nowe podsumowanie dla lektora gotowe.");
+            
+            setSummary(refinedSummary);
+            setLectorSummary(refinedLectorSummary);
+            
+            if (comments) {
+                 onDataLoaded({ video, comments, summary: refinedSummary, lectorSummary: refinedLectorSummary });
+            }
+            
+            addProgressStep("Zakończono. Analiza wideo została zaktualizowana.");
+        } catch (err) {
+             const errorMessage = err instanceof Error ? err.message : "Nieznany błąd.";
+             addProgressStep(`BŁĄD: Nie udało się zaktualizować analizy wideo. ${errorMessage}`);
+        } finally {
+            setIsRefining(false);
+        }
+    }, [summary, comments, video, onDataLoaded, addProgressStep]);
+    
+    const terminalTitle = isSummaryLoading ? "ANALIZA WIDEO" : (isRefining ? "AKTUALIZACJA W TOKU..." : "ANALIZA GOTOWA");
 
     return (
         <div className="space-y-8">
@@ -114,34 +163,46 @@ const VideoDetailView: React.FC<VideoDetailViewProps> = ({ video, apiKey, onBack
                     <AISummary 
                         summary={summary || ''} 
                         lectorSummary={lectorSummary || ''}
-                        isLoading={isLoading} 
+                        isLoading={isSummaryLoading}
+                        isUpdating={isRefining}
                         channelName={video.snippet.channelTitle}
-                        elevenLabsApiKey={elevenLabsApiKey}
                     />
+                    
+                     {(isSummaryLoading || !!summary) && (
+                         <div className="mt-8">
+                             <AnalysisProgress
+                                key={video.id}
+                                steps={progressSteps}
+                                title={terminalTitle}
+                                showBootSequence={false}
+                                isHumanInputEnabled={!isSummaryLoading && !isRefining && !!summary}
+                                onHumanInputCommand={handleHumanInputForVideo}
+                            />
+                         </div>
+                    )}
                 </div>
 
                 <div className="lg:col-span-1">
                      {/* Comments Section */}
                     <div>
                         <h3 className="text-2xl font-bold mb-6 text-slate-100">Najlepsze Komentarze</h3>
-                        {isLoading ? (
-                            <div className="space-y-4">
+                        {error ? (
+                            <div className="bg-yellow-500/10 border border-yellow-500/50 text-yellow-200 px-4 py-3 rounded-lg text-center">
+                                <p>Nie udało się wczytać komentarzy.</p>
+                            </div>
+                        ) : comments === null ? (
+                             <div className="space-y-4 animate-pulse-fast">
                                 {Array.from({ length: 3 }).map((_, i) => (
-                                    <div key={i} className="flex items-start space-x-4 p-4 bg-neutral-900 rounded-lg animate-pulse-fast">
-                                        <div className="w-12 h-12 rounded-full bg-neutral-800"></div>
+                                    <div key={i} className="bg-neutral-900 p-4 rounded-lg flex items-start space-x-4">
+                                        <div className="w-10 h-10 rounded-full bg-neutral-800"></div>
                                         <div className="flex-1 space-y-3">
-                                            <div className="h-4 bg-neutral-800 rounded w-1/4"></div>
+                                            <div className="h-4 bg-neutral-800 rounded w-1/2"></div>
                                             <div className="h-4 bg-neutral-800 rounded w-full"></div>
-                                            <div className="h-4 bg-neutral-800 rounded w-5/6"></div>
                                         </div>
                                     </div>
                                 ))}
                             </div>
-                        ) : error ? (
-                            <div className="bg-yellow-500/10 border border-yellow-500/50 text-yellow-200 px-4 py-3 rounded-lg text-center">
-                                <p>Nie udało się wczytać komentarzy.</p>
-                            </div>
-                        ) : comments.length > 0 ? (
+                        ) : comments && comments.length > 0 ? (
                             <div className="space-y-4">
                                 {comments.map(comment => {
                                     const snippet = comment.snippet.topLevelComment.snippet;

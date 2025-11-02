@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import type { Video } from '../types';
-import { formatNumber, parseISO8601Duration, formatDuration } from '../utils';
-import { LikesIcon, CommentsIcon, ViewsIcon, CalendarIcon } from './icons';
+import { formatNumber, parseISO8601Duration, formatDuration, calculateEngagementRate } from '../utils';
+import { LikesIcon, CommentsIcon, ViewsIcon, CalendarIcon, EngagementIcon } from './icons';
 
 interface VideoStatsGridProps {
     videos: Video[];
@@ -29,14 +29,6 @@ const VideoStatsGrid: React.FC<VideoStatsGridProps> = ({ videos, title, onVideoS
         const data = date.toLocaleDateString('pl-PL', { day: '2-digit', month: '2-digit' });
         const godzina = date.toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' });
         return `${dzienTygodnia}, ${data} ${godzina}`;
-    };
-
-    const calculateEngagementRate = (video: Video): number => {
-        const views = parseInt(video.statistics.viewCount, 10);
-        if (views === 0) return 0;
-        const likes = parseInt(video.statistics.likeCount, 10);
-        const comments = parseInt(video.statistics.commentCount, 10);
-        return ((likes + comments) / views) * 100;
     };
     
     const sortedVideos = useMemo(() => {
@@ -95,11 +87,11 @@ const VideoStatsGrid: React.FC<VideoStatsGridProps> = ({ videos, title, onVideoS
                         </div>
                         <div className="p-4 flex flex-col flex-grow">
                             <h4 className="font-bold text-lg text-slate-200 mb-2 flex-grow group-hover:text-wnet-yellow transition-colors">{video.snippet.title}</h4>
-                            <div className="flex items-center text-slate-400 text-xs mb-3">
+                            <div className="flex items-center text-slate-400 text-sm font-bold mb-3">
                                 <CalendarIcon className="h-4 w-4 mr-2 flex-shrink-0" />
                                 <span>{formatPublicationDate(video.snippet.publishedAt)}</span>
                             </div>
-                            <div className="flex justify-between items-center text-slate-400 mt-auto pt-2 border-t border-neutral-800">
+                            <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-slate-400 mt-auto pt-2 border-t border-neutral-800">
                                 <div className="flex items-center space-x-2">
                                     <ViewsIcon className="h-5 w-5 text-blue-400"/>
                                     <span className="font-semibold text-sm">{formatNumber(video.statistics.viewCount)}</span>
@@ -111,6 +103,10 @@ const VideoStatsGrid: React.FC<VideoStatsGridProps> = ({ videos, title, onVideoS
                                 <div className="flex items-center space-x-2">
                                     <CommentsIcon className="h-5 w-5 text-green-400"/>
                                     <span className="font-semibold text-sm">{formatNumber(video.statistics.commentCount)}</span>
+                                </div>
+                                 <div className="flex items-center space-x-2">
+                                    <EngagementIcon className="h-5 w-5 text-red-400"/>
+                                    <span className="font-semibold text-sm">{calculateEngagementRate(video).toFixed(2)}%</span>
                                 </div>
                             </div>
                         </div>

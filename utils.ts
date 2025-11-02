@@ -1,3 +1,5 @@
+import type { Video } from './types';
+
 export const formatNumber = (num: number | string): string => {
     const number = typeof num === 'string' ? parseInt(num, 10) : num;
     if (isNaN(number)) return '0';
@@ -40,3 +42,18 @@ export const formatDuration = (seconds: number): string => {
 
     return `${hStr}${mStr}:${sStr}`;
 };
+
+/**
+ * Calculates the engagement rate of a video.
+ * @param video The video object.
+ * @returns The engagement rate as a percentage.
+ */
+export const calculateEngagementRate = (video: Video): number => {
+    const views = parseInt(video.statistics.viewCount, 10);
+    if (views === 0) return 0;
+    const likes = parseInt(video.statistics.likeCount, 10);
+    const comments = parseInt(video.statistics.commentCount, 10);
+    return ((likes + comments) / views) * 100;
+};
+
+export type { Video };
