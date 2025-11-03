@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
-import type { Channel, Video, CommentThread, AnalysisResult, AnalyzedVideo } from './types';
-import { getChannelStats, getChannelVideos } from './services/youtubeService';
+import type { Channel, Video, Playlist, AnalysisResult, AnalyzedVideo } from './types';
+import { getChannelStats, getChannelVideos, getChannelPlaylists } from './services/youtubeService';
 import { generateChannelSummary, updateChannelSummaryWithVideoInsights, generateUpdateChangelog, generateLectorSummary, refineAnalysis } from './services/geminiService';
 import { exportAnalysesToHTML } from './services/exportService';
 import ChannelHeader from './components/ChannelHeader';
@@ -28,11 +28,29 @@ const PREDEFINED_CHANNELS = [
     { id: 'UCn_ngI4kGCiMploRas6QUBQ', name: 'Polityczny Vibe' },
     { id: 'UCTAAUHQl0sN6w0RpAUzs-Bg', name: 'Bądź Na Bieżąco' },
     { id: 'UCv8Ist9tKfzHxQ6gHH9_hTQ', name: 'Jan Pospieszalski' },
-    { id: 'UCeqUW_B8E-BPcpw1oQQ0rFA', name: 'Polskość to normalność. Tomasz Gdula' },
+    { id: 'UCeqUW_B8E-BPcpw1oQQ0rFA', name: 'Polskość to normalność' },
     { id: 'UCqXzykyeNdMNwiXTvfUOSNQ', name: 'Rafał Ziemkiewicz' },
     { id: 'UCp204ah3iChrYrpY_gccm6g', name: 'Otwarta Konserwa' },
     { id: 'UC4uWtFsAryV2p_UDvu0rraA', name: 'Rymanowski Live' },
     { id: 'UC4U-Bz5I-jttkLO4XktpXOQ', name: 'GadowskiTV' },
+    { id: 'UCPiu4CZlknkTworskK79CPg', name: 'wPolsce24' },
+    { id: 'UCNY81VIp_eKAmyKymiAyr3A', name: 'Telewizja Trwam' },
+    { id: 'UCtnpvFVFVlS8sf5blhTr1lQ', name: 'Stanisław Michalkiewicz' },
+    { id: 'UCg-s1p2hBd1p061-4c1-x-g', name: 'Łukasz Warzecha' },
+    { id: 'UCuAOJnMr905iKjURUsffDgA', name: 'Układ otwarty - Igor Janke' },
+    { id: 'UCn0TKgJb9EV6COKd8vlzJZQ', name: 'Konfederacja' },
+    { id: 'UCj9A4-h-h6N-MYpE2_5sK9A', name: 'Prawo i Sprawiedliwość' },
+    { id: 'UCvFf9SgP0wB-E1-s1sgxAlw', name: 'Polsat News' },
+    { id: 'UC3R8278fJUWn2ysrOCJrmAQ', name: 'TVN24' },
+    { id: 'UCzQZbOb86WvhOPoR7jgAfsA', name: 'TVP Info' },
+    { id: 'UCkC9YgH_FlqOhOIoTDFt4CA', name: 'RMF24' },
+    { id: 'UCjkNubkfecaFLZbHnnsz6pw', name: 'Onet Rano' },
+    { id: 'UCKBknIMjyDBuCCMesl1F0Yw', name: 'Gazeta Wyborcza' },
+    { id: 'UCk98nS2WgQ16IbuG1g5Bw-A', name: 'OKO.press' },
+    { id: 'UCMvBXVa0KUO-IaeXzUtbuHA', name: 'Newsweek Polska' },
+    { id: 'UC3MluKZngz34_Zi-XvpGtXw', name: 'TOMASZ LIS - kanał oficjalny' },
+    { id: 'UCHWB1dvebBlXIHUSuUQSrxQ', name: 'Krytyka Polityczna' },
+    { id: 'UC9P7BO26oRIYsOmZ4u3P0WQ', name: 'KanałTAK' }
 ];
 
 const RADIO_WNET_ID = 'UCMA-v2JV_9ZYNoY4uY4mRWA';
@@ -224,6 +242,11 @@ const App: React.FC = () => {
         };
     }, [analysisHistory]);
 
+    const analyzedVideoIds = useMemo(
+        () => Object.keys(currentAnalysis?.analyzedVideos || {}),
+        [currentAnalysis?.analyzedVideos]
+    );
+
     const addProgressStep = useCallback((message: string) => {
         setProgressSteps(prev => [...prev, message]);
     }, []);
@@ -256,24 +279,33 @@ const App: React.FC = () => {
             addProgressStep('Wysyłam żądanie o statystyki wybranego kanału...');
             const selectedVideosPromise = getChannelVideos(channelId, startDate, endDate);
             addProgressStep('Wysyłam żądanie o listę filmów wybranego kanału...');
+            const selectedPlaylistsPromise = getChannelPlaylists(channelId);
+            addProgressStep('Wysyłam żądanie o playlisty wybranego kanału...');
+
 
             let mainChannelForPrompt: Channel;
             let mainVideosForPrompt: { longForm: Video[], shorts: Video[], liveStreams: Video[] };
+            let mainPlaylistsForPrompt: Playlist[];
             let competitorChannelForPrompt: Channel | undefined;
             let competitorVideosForPrompt: { longForm: Video[], shorts: Video[], liveStreams: Video[] } | undefined;
+            let competitorPlaylistsForPrompt: Playlist[] | undefined;
 
             let displayChannel: Channel;
             let displayVideos: { longForm: Video[], shorts: Video[], liveStreams: Video[] };
+            let displayPlaylists: Playlist[];
 
             if (isComparativeAnalysis) {
                 addProgressStep('Analiza porównawcza: Pobieram dane dla kanału Radio Wnet...');
                 const radioWnetChannelPromise = getChannelStats(RADIO_WNET_ID);
                 const radioWnetVideosPromise = getChannelVideos(RADIO_WNET_ID, startDate, endDate);
-                const [selectedChannel, selectedVideos, wnetChannel, wnetVideos] = await Promise.all([
+                const radioWnetPlaylistsPromise = getChannelPlaylists(RADIO_WNET_ID);
+                const [selectedChannel, selectedVideos, selectedPlaylists, wnetChannel, wnetVideos, wnetPlaylists] = await Promise.all([
                     selectedChannelPromise,
                     selectedVideosPromise,
+                    selectedPlaylistsPromise,
                     radioWnetChannelPromise,
-                    radioWnetVideosPromise
+                    radioWnetVideosPromise,
+                    radioWnetPlaylistsPromise
                 ]);
                 
                 addProgressStep(`[ OK ] Pobrano dane dla: ${selectedChannel.snippet.title}`);
@@ -281,19 +313,24 @@ const App: React.FC = () => {
 
                 displayChannel = selectedChannel;
                 displayVideos = selectedVideos;
+                displayPlaylists = selectedPlaylists;
                 
                 mainChannelForPrompt = wnetChannel;
                 mainVideosForPrompt = wnetVideos;
+                mainPlaylistsForPrompt = wnetPlaylists;
                 competitorChannelForPrompt = selectedChannel;
                 competitorVideosForPrompt = selectedVideos;
+                competitorPlaylistsForPrompt = selectedPlaylists;
             } else {
-                const [selectedChannel, selectedVideos] = await Promise.all([selectedChannelPromise, selectedVideosPromise]);
+                const [selectedChannel, selectedVideos, selectedPlaylists] = await Promise.all([selectedChannelPromise, selectedVideosPromise, selectedPlaylistsPromise]);
                 addProgressStep(`[ OK ] Pobrano dane dla: ${selectedChannel.snippet.title}`);
                 displayChannel = selectedChannel;
                 displayVideos = selectedVideos;
+                displayPlaylists = selectedPlaylists;
 
                 mainChannelForPrompt = selectedChannel;
                 mainVideosForPrompt = selectedVideos;
+                mainPlaylistsForPrompt = selectedPlaylists;
             }
             
             addProgressStep('[ OK ] Dane kanału i listy wideo pobrane. Możesz już je przeglądać.');
@@ -305,6 +342,7 @@ const App: React.FC = () => {
                 id: newAnalysisId,
                 channelData: displayChannel,
                 videoData: displayVideos,
+                playlists: displayPlaylists,
                 aiSummary: initialSummary,
                 lectorSummary: '',
                 startDate,
@@ -342,8 +380,10 @@ const App: React.FC = () => {
                     const summary = await generateChannelSummary(
                         mainChannelForPrompt,
                         mainVideosForPrompt,
+                        mainPlaylistsForPrompt,
                         competitorChannelForPrompt,
-                        competitorVideosForPrompt
+                        competitorVideosForPrompt,
+                        competitorPlaylistsForPrompt
                     );
                     addProgressStep('[ OK ] Model AI zakończył generowanie. Otrzymano odpowiedź.');
                     
@@ -698,7 +738,7 @@ const App: React.FC = () => {
                                                 <div className="lg:col-span-2 space-y-12">
                                                     {currentAnalysis.videoData.longForm.length > 0 ? (
                                                         <div id="videos-section" className="scroll-mt-24">
-                                                            <VideoStatsGrid title="Najpopularniejsze Filmy" videos={currentAnalysis.videoData.longForm} onVideoSelect={handleVideoSelect} />
+                                                            <VideoStatsGrid title="Najpopularniejsze Filmy" videos={currentAnalysis.videoData.longForm} onVideoSelect={handleVideoSelect} analyzedVideoIds={analyzedVideoIds} />
                                                         </div>
                                                     ) : (
                                                         <div className="text-center text-slate-500">
@@ -711,13 +751,13 @@ const App: React.FC = () => {
 
                                                     {currentAnalysis.videoData.shorts.length > 0 && (
                                                          <div id="shorts-section" className="scroll-mt-24">
-                                                            <VideoStatsGrid title="Najpopularniejsze Shorty" videos={currentAnalysis.videoData.shorts} onVideoSelect={handleVideoSelect}/>
+                                                            <VideoStatsGrid title="Najpopularniejsze Shorty" videos={currentAnalysis.videoData.shorts} onVideoSelect={handleVideoSelect} analyzedVideoIds={analyzedVideoIds}/>
                                                         </div>
                                                     )}
 
                                                     {currentAnalysis.videoData.liveStreams.length > 0 && (
                                                         <div id="livestreams-section" className="scroll-mt-24">
-                                                            <VideoStatsGrid title="Najpopularniejsze Transmisje na Żywo" videos={currentAnalysis.videoData.liveStreams} onVideoSelect={handleVideoSelect}/>
+                                                            <VideoStatsGrid title="Najpopularniejsze Transmisje na Żywo" videos={currentAnalysis.videoData.liveStreams} onVideoSelect={handleVideoSelect} analyzedVideoIds={analyzedVideoIds}/>
                                                         </div>
                                                     )}
                                                 </div>

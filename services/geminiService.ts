@@ -1,5 +1,5 @@
 import { GoogleGenAI } from "@google/genai";
-import type { Channel, Video, CommentThread } from '../types';
+import type { Channel, Video, CommentThread, Playlist } from '../types';
 
 // FIX: Initialize the GoogleGenAI client according to the guidelines.
 // The API key must be obtained exclusively from the environment variable `process.env.API_KEY`.
@@ -14,19 +14,30 @@ const formatVideosForPrompt = (videos: Video[]) => {
         .join('\n');
 };
 
+const formatPlaylistsForPrompt = (playlists: Playlist[]) => {
+    if (playlists.length === 0) return 'Brak publicznych playlist.';
+    // Limit to a reasonable number to avoid excessive token usage
+    return playlists
+        .slice(0, 25)
+        .map(p => `- "${p.snippet.title}"`)
+        .join('\n');
+};
+
 /**
  * Generates a comprehensive summary for a YouTube channel, either standalone or in comparison to a competitor.
  */
 export const generateChannelSummary = async (
     mainChannel: Channel,
     mainVideos: { longForm: Video[], shorts: Video[], liveStreams: Video[] },
+    mainPlaylists: Playlist[],
     competitorChannel?: Channel,
-    competitorVideos?: { longForm: Video[], shorts: Video[], liveStreams: Video[] }
+    competitorVideos?: { longForm: Video[], shorts: Video[], liveStreams: Video[] },
+    competitorPlaylists?: Playlist[]
 ): Promise<string> => {
     let prompt = '';
     const allMainVideos = [...mainVideos.longForm, ...mainVideos.shorts, ...mainVideos.liveStreams];
     
-    if (competitorChannel && competitorVideos) {
+    if (competitorChannel && competitorVideos && competitorPlaylists) {
         // Comparative analysis prompt
         const allCompetitorVideos = [...competitorVideos.longForm, ...competitorVideos.shorts, ...competitorVideos.liveStreams];
         prompt = `
@@ -41,6 +52,9 @@ Jesteś ekspertem od analizy kanałów YouTube dla polskiego medium informacyjne
 **Najpopularniejsze materiały kanału Radio Wnet w analizowanym okresie:**
 ${formatVideosForPrompt(allMainVideos)}
 
+**Struktura Playlist Radia Wnet:**
+${formatPlaylistsForPrompt(mainPlaylists)}
+
 **Kanał Konkurencyjny:**
 - Nazwa: ${competitorChannel.snippet.title}
 - Subskrybenci: ${competitorChannel.statistics.subscriberCount}
@@ -50,12 +64,15 @@ ${formatVideosForPrompt(allMainVideos)}
 **Najpopularniejsze materiały kanału Konkurencyjnego w analizowanym okresie:**
 ${formatVideosForPrompt(allCompetitorVideos)}
 
+**Struktura Playlist Konkurenta:**
+${formatPlaylistsForPrompt(competitorPlaylists)}
+
 **Twoje zadania:**
 
 1.  **Podsumowanie i Kluczowe Wnioski (Executive Summary):** Rozpocznij od zwięzłego podsumowania (2-3 zdania), które wskazuje na główne różnice i podobieństwa oraz najważniejszy wniosek z porównania.
-2.  **Analiza Mocnych Stron Konkurenta:** Zidentyfikuj i opisz 3-4 kluczowe mocne strony kanału konkurencyjnego. Co robią lepiej lub inaczej niż Radio Wnet? Analizuj tematykę, formaty, częstotliwość publikacji, tytuły, miniatury (na podstawie tytułów) i zaangażowanie.
-3.  **Analiza Słabych Stron Konkurenta:** Wskaż 2-3 potencjalne słabości lub obszary do poprawy u konkurenta. Gdzie Radio Wnet ma przewagę?
-4.  **Rekomendacje dla Radia Wnet:** Na podstawie analizy, sformułuj 3-5 konkretnych, praktycznych rekomendacji dla kanału Radio Wnet. Co Radio Wnet może zaadaptować, czego unikać, a co robić, aby zwiększyć swoją konkurencyjność? Rekomendacje powinny być umotywowane danymi i obserwacjami.
+2.  **Analiza Mocnych Stron Konkurenta:** Zidentyfikuj i opisz 3-4 kluczowe mocne strony kanału konkurencyjnego. Co robią lepiej lub inaczej niż Radio Wnet? Analizuj tematykę, formaty, częstotliwość publikacji, tytuły, miniatury (na podstawie tytułów), zaangażowanie, **a także strategię organizacji treści w playlistach.** Czy ich playlisty są lepiej zorganizowane, tematyczne, czy promują konkretne serie?
+3.  **Analiza Słabych Stron Konkurenta:** Wskaż 2-3 potencjalne słabości lub obszary do poprawy u konkurenta. Gdzie Radio Wnet ma przewagę, w tym w kontekście organizacji playlist?
+4.  **Rekomendacje dla Radia Wnet:** Na podstawie analizy, sformułuj 3-5 konkretnych, praktycznych rekomendacji dla kanału Radio Wnet. Co Radio Wnet może zaadaptować, czego unikać, a co robić, aby zwiększyć swoją konkurencyjność? **Uwzględnij rekomendacje dotyczące tworzenia, nazywania i promowania playlist.**
 5.  **Potencjalne Zagrożenia i Szanse:** Zidentyfikuj jedno kluczowe zagrożenie ze strony konkurenta i jedną największą szansę dla Radia Wnet, która wyłania się z tego porównania.
 
 **Formatowanie:** Użyj Markdown. Stosuj nagłówki (np. ##), pogrubienia (**), listy punktowane (-) dla przejrzystości.
@@ -74,15 +91,19 @@ Jesteś ekspertem od analizy kanałów YouTube dla polskiego medium informacyjne
 **Najpopularniejsze materiały w analizowanym okresie:**
 ${formatVideosForPrompt(allMainVideos)}
 
+**Struktura Playlist Kanału:**
+${formatPlaylistsForPrompt(mainPlaylists)}
+
 **Twoje zadania:**
 
 1.  **Podsumowanie i Kluczowe Wnioski (Executive Summary):** Rozpocznij od zwięzłego podsumowania (2-3 zdania) ogólnej kondycji kanału w badanym okresie. Co się wyróżnia? Jaki jest główny trend?
 2.  **Analiza Contentu:**
     *   **Tematyka:** Jakie tematy dominują? Czy są jakieś "gorące" tematy, które generują ponadprzeciętne zaangażowanie?
     *   **Formaty:** Jakie formaty wideo (np. wywiady, relacje, programy studyjne, shorty) osiągają najlepsze wyniki?
+    *   **Strategia Playlist:** Jak kanał organizuje swoje treści? Czy playlisty są tematyczne, czy promują konkretne serie? Czy ta strategia jest efektywna w utrzymaniu uwagi widza? Co sugeruje struktura playlist o długoterminowej strategii kanału?
     *   **Największe Sukcesy:** Wskaż 2-3 materiały, które były największymi sukcesami i wyjaśnij, dlaczego (np. "trafiony" temat, gość, chwytliwy tytuł).
     *   **Niewykorzystany Potencjał:** Wskaż 1-2 materiały, które miały niższe wyniki, niż można by się spodziewać. Spróbuj zdiagnozować przyczynę.
-3.  **Rekomendacje:** Na podstawie analizy, sformułuj 3-5 konkretnych, praktycznych rekomendacji dla kanału. Co warto kontynuować, co zmienić, a co zacząć robić, aby zwiększyć zasięgi i zaangażowanie?
+3.  **Rekomendacje:** Na podstawie analizy, sformułuj 3-5 konkretnych, praktycznych rekomendacji dla kanału. Co warto kontynuować, co zmienić, a co zacząć robić, aby zwiększyć zasięgi i zaangażowanie? **Uwzględnij rekomendacje dotyczące playlist.**
 4.  **Szanse i Zagrożenia:** Zidentyfikuj jedną największą szansę (np. nowy format, seria, trend) i jedno kluczowe zagrożenie (np. spadek zainteresowania danym tematem, rosnąca konkurencja w niszy) dla kanału w najbliższej przyszłości.
 
 **Formatowanie:** Użyj Markdown. Stosuj nagłówki (np. ##), pogrubienia (**), listy punktowane (-) dla przejrzystości.

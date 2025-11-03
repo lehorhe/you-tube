@@ -1,8 +1,8 @@
-import type { Channel, Video, CommentThread } from '../types';
+import type { Channel, Video, CommentThread, Playlist } from '../types';
 import { parseISO8601Duration } from '../utils';
 
 const API_BASE_URL = 'https://www.googleapis.com/youtube/v3';
-const YOUTUBE_API_KEY = 'AIzaSyBtOQB0ZzBCR32R9njHzDfLfdn_yOgNym0';
+const YOUTUBE_API_KEY = 'AIzaSyBatPYmVZYZL_Ri10LOLRDiStdPp68rvdw';
 
 const handleApiError = async (response: Response) => {
     if (!response.ok) {
@@ -110,6 +110,31 @@ export const getChannelVideos = async (channelId: string, startDate: string, end
     });
     
     return { longForm, shorts, liveStreams };
+};
+
+export const getChannelPlaylists = async (channelId: string): Promise<Playlist[]> => {
+    const allPlaylists: Playlist[] = [];
+    let nextPageToken: string | undefined = undefined;
+
+    do {
+        const url = new URL(`${API_BASE_URL}/playlists`);
+        url.searchParams.set('part', 'snippet');
+        url.searchParams.set('channelId', channelId);
+        url.searchParams.set('maxResults', '50');
+        url.searchParams.set('key', YOUTUBE_API_KEY);
+        if (nextPageToken) {
+            url.searchParams.set('pageToken', nextPageToken);
+        }
+
+        const response = await fetch(url.toString());
+        const data = await handleApiError(response);
+        
+        allPlaylists.push(...data.items);
+        nextPageToken = data.nextPageToken;
+
+    } while (nextPageToken && allPlaylists.length < 200); // Limit to 200 to avoid excessive API calls for huge channels
+
+    return allPlaylists;
 };
 
 export const getVideoComments = async (videoId: string): Promise<CommentThread[]> => {

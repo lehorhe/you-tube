@@ -95,10 +95,25 @@ export interface AnalyzedVideo {
     comments: CommentThread[];
 }
 
+export interface PlaylistSnippet {
+    publishedAt: string;
+    channelId: string;
+    title: string;
+    description: string;
+    channelTitle: string;
+    thumbnails: Thumbnails;
+}
+
+export interface Playlist {
+    id: string;
+    snippet: PlaylistSnippet;
+}
+
 // New type for storing analysis results
 export interface AnalysisResult {
     id: string;
     channelData: Channel;
+    playlists: Playlist[];
     videoData: { longForm: Video[], shorts: Video[], liveStreams: Video[] };
     aiSummary: string;
     lectorSummary?: string; // New field for the spoken summary
