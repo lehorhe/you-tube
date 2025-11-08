@@ -1,5 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
-import type { Channel, Video, CommentThread, Playlist } from '../types';
+import type { Channel, Video, CommentThread, Playlist, AnalysisResult } from '../types';
+import { formatNumber, formatCurrency } from '../utils';
 
 // FIX: Initialize the GoogleGenAI client according to the guidelines.
 // The API key must be obtained exclusively from the environment variable `process.env.API_KEY`.
@@ -30,18 +31,53 @@ export const generateChannelSummary = async (
     mainChannel: Channel,
     mainVideos: { longForm: Video[], shorts: Video[], liveStreams: Video[] },
     mainPlaylists: Playlist[],
+    startDate: string,
+    endDate: string,
+    mainRevenue: AnalysisResult['estimatedRevenue'],
     competitorChannel?: Channel,
     competitorVideos?: { longForm: Video[], shorts: Video[], liveStreams: Video[] },
-    competitorPlaylists?: Playlist[]
+    competitorPlaylists?: Playlist[],
+    competitorRevenue?: AnalysisResult['estimatedRevenue']
 ): Promise<string> => {
     let prompt = '';
     const allMainVideos = [...mainVideos.longForm, ...mainVideos.shorts, ...mainVideos.liveStreams];
+    const formatDate = (dateStr: string) => new Date(dateStr).toLocaleDateString('pl-PL');
     
-    if (competitorChannel && competitorVideos && competitorPlaylists) {
+    if (competitorChannel && competitorVideos && competitorPlaylists && competitorRevenue) {
         // Comparative analysis prompt
         const allCompetitorVideos = [...competitorVideos.longForm, ...competitorVideos.shorts, ...competitorVideos.liveStreams];
+        
+        const mainTotals = {
+            longForm: mainVideos.longForm.reduce((sum, v) => sum + parseInt(v.statistics.viewCount, 10), 0),
+            shorts: mainVideos.shorts.reduce((sum, v) => sum + parseInt(v.statistics.viewCount, 10), 0),
+            live: mainVideos.liveStreams.reduce((sum, v) => sum + parseInt(v.statistics.viewCount, 10), 0),
+        };
+        const competitorTotals = {
+            longForm: competitorVideos.longForm.reduce((sum, v) => sum + parseInt(v.statistics.viewCount, 10), 0),
+            shorts: competitorVideos.shorts.reduce((sum, v) => sum + parseInt(v.statistics.viewCount, 10), 0),
+            live: competitorVideos.liveStreams.reduce((sum, v) => sum + parseInt(v.statistics.viewCount, 10), 0),
+        };
+
         prompt = `
 Jesteś ekspertem od analizy kanałów YouTube dla polskiego medium informacyjnego Radio Wnet. Twoim zadaniem jest przeprowadzenie szczegółowej analizy porównawczej kanału Radio Wnet z kanałem konkurencyjnym. Analiza powinna być napisana w języku polskim, w profesjonalnym, ale przystępnym tonie, używając formatowania Markdown.
+
+**Analizowany okres:** ${formatDate(startDate)} - ${formatDate(endDate)}
+
+**Podsumowanie Wyświetleń w Okresie:**
+| Typ Treści | Radio Wnet | ${competitorChannel.snippet.title} |
+|---|---|---|
+| **Filmy** | ${formatNumber(mainTotals.longForm)} | ${formatNumber(competitorTotals.longForm)} |
+| **Shorty** | ${formatNumber(mainTotals.shorts)} | ${formatNumber(competitorTotals.shorts)} |
+| **Transmisje** | ${formatNumber(mainTotals.live)} | ${formatNumber(competitorTotals.live)} |
+
+**Szacowane Przychody w Okresie (oparte na benchmarku RPM Radia Wnet):**
+| Typ Treści | Radio Wnet | ${competitorChannel.snippet.title} |
+|---|---|---|
+| **Filmy** | ${formatCurrency(mainRevenue.longForm)} | ${formatCurrency(competitorRevenue.longForm)} |
+| **Shorty** | ${formatCurrency(mainRevenue.shorts)} | ${formatCurrency(competitorRevenue.shorts)} |
+| **Transmisje** | ${formatCurrency(mainRevenue.liveStreams)} | ${formatCurrency(competitorRevenue.liveStreams)} |
+| **ŁĄCZNIE** | **${formatCurrency(mainRevenue.total)}** | **${formatCurrency(competitorRevenue.total)}** |
+
 
 **Kanał Główny (Radio Wnet):**
 - Nazwa: ${mainChannel.snippet.title}
@@ -69,16 +105,22 @@ ${formatPlaylistsForPrompt(competitorPlaylists)}
 
 **Twoje zadania:**
 
-1.  **Podsumowanie i Kluczowe Wnioski (Executive Summary):** Rozpocznij od zwięzłego podsumowania (2-3 zdania), które wskazuje na główne różnice i podobieństwa oraz najważniejszy wniosek z porównania.
-2.  **Analiza Mocnych Stron Konkurenta:** Zidentyfikuj i opisz 3-4 kluczowe mocne strony kanału konkurencyjnego. Co robią lepiej lub inaczej niż Radio Wnet? Analizuj tematykę, formaty, częstotliwość publikacji, tytuły, miniatury (na podstawie tytułów), zaangażowanie, **a także strategię organizacji treści w playlistach.** Czy ich playlisty są lepiej zorganizowane, tematyczne, czy promują konkretne serie?
-3.  **Analiza Słabych Stron Konkurenta:** Wskaż 2-3 potencjalne słabości lub obszary do poprawy u konkurenta. Gdzie Radio Wnet ma przewagę, w tym w kontekście organizacji playlist?
-4.  **Rekomendacje dla Radia Wnet:** Na podstawie analizy, sformułuj 3-5 konkretnych, praktycznych rekomendacji dla kanału Radio Wnet. Co Radio Wnet może zaadaptować, czego unikać, a co robić, aby zwiększyć swoją konkurencyjność? **Uwzględnij rekomendacje dotyczące tworzenia, nazywania i promowania playlist.**
+1.  **Podsumowanie i Kluczowe Wnioski (Executive Summary):** Rozpocznij od zwięzłego podsumowania (2-3 zdania). **Koniecznie przywołaj w nim konkretne, łączne liczby wyświetleń i szacowane łączne przychody dla obu kanałów z powyższych tabel.** Wskaż, który kanał dominował pod względem oglądalności i rentowności, i jaki jest najważniejszy wniosek płynący z tego porównania.
+2.  **Analiza Mocnych Stron Konkurenta:** Zidentyfikuj i opisz 3-4 kluczowe mocne strony kanału konkurencyjnego. Co robią lepiej lub inaczej niż Radio Wnet? Analizuj tematykę, formaty (które generują najwięcej wyświetleń i potencjalnych przychodów), częstotliwość publikacji, tytuły, miniatury (na podstawie tytułów), zaangażowanie, **a także strategię organizacji treści w playlistach.**
+3.  **Analiza Słabych Stron Konkurenta:** Wskaż 2-3 potencjalne słabości u konkurenta. Gdzie Radio Wnet ma przewagę, np. w rentowności konkretnych formatów wideo?
+4.  **Rekomendacje dla Radia Wnet:** Na podstawie analizy, sformułuj 3-5 konkretnych, praktycznych rekomendacji. Co Radio Wnet może zaadaptować, czego unikać, a co robić, aby zwiększyć swoją konkurencyjność i potencjalne przychody? **Uwzględnij rekomendacje dotyczące playlist.**
 5.  **Potencjalne Zagrożenia i Szanse:** Zidentyfikuj jedno kluczowe zagrożenie ze strony konkurenta i jedną największą szansę dla Radia Wnet, która wyłania się z tego porównania.
 
 **Formatowanie:** Użyj Markdown. Stosuj nagłówki (np. ##), pogrubienia (**), listy punktowane (-) dla przejrzystości.
 `;
     } else {
         // Single channel analysis prompt
+        const mainTotals = {
+            longForm: mainVideos.longForm.reduce((sum, v) => sum + parseInt(v.statistics.viewCount, 10), 0),
+            shorts: mainVideos.shorts.reduce((sum, v) => sum + parseInt(v.statistics.viewCount, 10), 0),
+            live: mainVideos.liveStreams.reduce((sum, v) => sum + parseInt(v.statistics.viewCount, 10), 0),
+        };
+
         prompt = `
 Jesteś ekspertem od analizy kanałów YouTube dla polskiego medium informacyjnego Radio Wnet. Twoim zadaniem jest przeprowadzenie szczegółowej analizy kanału. Analiza powinna być napisana w języku polskim, w profesjonalnym, ale przystępnym tonie, używając formatowania Markdown.
 
@@ -88,6 +130,17 @@ Jesteś ekspertem od analizy kanałów YouTube dla polskiego medium informacyjne
 - Łączna liczba filmów: ${mainChannel.statistics.videoCount}
 - Łączna liczba wyświetleń: ${mainChannel.statistics.viewCount}
 
+**Wyniki w Analizowanym Okresie (${formatDate(startDate)} - ${formatDate(endDate)}):**
+- **Łączne wyświetlenia filmów:** ${formatNumber(mainTotals.longForm)}
+- **Łączne wyświetlenia Shorts:** ${formatNumber(mainTotals.shorts)}
+- **Łączne wyświetlenia transmisji:** ${formatNumber(mainTotals.live)}
+
+**Szacowane Przychody w Okresie (oparte na benchmarku RPM Radia Wnet):**
+- **Z filmów:** ${formatCurrency(mainRevenue.longForm)}
+- **Z Shorts:** ${formatCurrency(mainRevenue.shorts)}
+- **Z transmisji:** ${formatCurrency(mainRevenue.liveStreams)}
+- **ŁĄCZNIE:** **${formatCurrency(mainRevenue.total)}**
+
 **Najpopularniejsze materiały w analizowanym okresie:**
 ${formatVideosForPrompt(allMainVideos)}
 
@@ -96,15 +149,15 @@ ${formatPlaylistsForPrompt(mainPlaylists)}
 
 **Twoje zadania:**
 
-1.  **Podsumowanie i Kluczowe Wnioski (Executive Summary):** Rozpocznij od zwięzłego podsumowania (2-3 zdania) ogólnej kondycji kanału w badanym okresie. Co się wyróżnia? Jaki jest główny trend?
+1.  **Podsumowanie i Kluczowe Wnioski (Executive Summary):** Rozpocznij od zwięzłego podsumowania (2-3 zdania) ogólnej kondycji kanału. **Koniecznie przywołaj w nim konkretne, łączne liczby wyświetleń oraz łączny szacowany przychód.** Wskaż, który format był najsilniejszy pod względem oglądalności i który okazał się najbardziej dochodowy.
 2.  **Analiza Contentu:**
-    *   **Tematyka:** Jakie tematy dominują? Czy są jakieś "gorące" tematy, które generują ponadprzeciętne zaangażowanie?
-    *   **Formaty:** Jakie formaty wideo (np. wywiady, relacje, programy studyjne, shorty) osiągają najlepsze wyniki?
-    *   **Strategia Playlist:** Jak kanał organizuje swoje treści? Czy playlisty są tematyczne, czy promują konkretne serie? Czy ta strategia jest efektywna w utrzymaniu uwagi widza? Co sugeruje struktura playlist o długoterminowej strategii kanału?
-    *   **Największe Sukcesy:** Wskaż 2-3 materiały, które były największymi sukcesami i wyjaśnij, dlaczego (np. "trafiony" temat, gość, chwytliwy tytuł).
-    *   **Niewykorzystany Potencjał:** Wskaż 1-2 materiały, które miały niższe wyniki, niż można by się spodziewać. Spróbuj zdiagnozować przyczynę.
-3.  **Rekomendacje:** Na podstawie analizy, sformułuj 3-5 konkretnych, praktycznych rekomendacji dla kanału. Co warto kontynuować, co zmienić, a co zacząć robić, aby zwiększyć zasięgi i zaangażowanie? **Uwzględnij rekomendacje dotyczące playlist.**
-4.  **Szanse i Zagrożenia:** Zidentyfikuj jedną największą szansę (np. nowy format, seria, trend) i jedno kluczowe zagrożenie (np. spadek zainteresowania danym tematem, rosnąca konkurencja w niszy) dla kanału w najbliższej przyszłości.
+    *   **Tematyka i Rentowność:** Jakie tematy dominują? Czy najbardziej popularne tematy są również najbardziej dochodowe?
+    *   **Formaty:** Które formaty wideo (wywiady, relacje, shorty, transmisje) osiągają najlepsze wyniki finansowe? Gdzie leży największy potencjał monetyzacyjny?
+    *   **Strategia Playlist:** Jak kanał organizuje swoje treści? Czy playlisty grupują najbardziej dochodowe materiały? Jak można zoptymalizować playlisty, by zwiększyć przychody?
+    *   **Największe Sukcesy:** Wskaż 2-3 materiały, które były największymi sukcesami (pod względem oglądalności i/lub przychodu) i wyjaśnij dlaczego.
+    *   **Niewykorzystany Potencjał:** Wskaż 1-2 materiały o niższych wynikach. Czy można było je lepiej zmonetyzować?
+3.  **Rekomendacje:** Sformułuj 3-5 konkretnych rekomendacji. Co warto kontynuować, co zmienić, a co zacząć robić, aby zwiększyć zasięgi, zaangażowanie i **przychody**? **Uwzględnij rekomendacje dotyczące playlist.**
+4.  **Szanse i Zagrożenia:** Zidentyfikuj jedną największą szansę (np. nowy, dochodowy format) i jedno kluczowe zagrożenie (np. spadek rentowności danego typu treści) dla kanału.
 
 **Formatowanie:** Użyj Markdown. Stosuj nagłówki (np. ##), pogrubienia (**), listy punktowane (-) dla przejrzystości.
 `;
@@ -224,7 +277,7 @@ ${videoInsight}
 **Instrukcje:**
 1.  **Zachowaj Strukturę:** Utrzymaj oryginalną strukturę (nagłówki, sekcje) głównej analizy.
 2.  **Wzbogać, Nie Zastępuj:** Dodaj nowe informacje w odpowiednich sekcjach. Na przykład, jeśli analiza wideo pokazuje sukces konkretnego formatu, dodaj zdanie o tym w sekcji "Analiza Contentu" lub "Rekomendacje" w głównej analizie.
-3.  **Bądź Subtelny:** Integracja powinna być płynna. Używaj sformułowań takich jak "Dobrym przykładem jest materiał [tytuł], który...", "Potwierdza to analiza filmu [tytuł], gdzie widzowie..."
+3.  **Bądź Subtelny:** Integracja powinna być płunna. Używaj sformułowań takich jak "Dobrym przykładem jest materiał [tytuł], który...", "Potwierdza to analiza filmu [tytuł], gdzie widzowie..."
 4.  **Nie Dodawaj Nowych Sekcji:** Nie twórz osobnej sekcji dla analizy wideo. Informacje z niej mają stać się częścią istniejących sekcji.
 5.  **Zwróć Pełny, Zaktualizowany Raport:** Twoim wynikiem końcowym powinien być kompletny, zaktualizowany tekst głównej analizy, zawierający już nowe wnioski.
 

@@ -116,11 +116,17 @@ export interface AnalysisResult {
     playlists: Playlist[];
     videoData: { longForm: Video[], shorts: Video[], liveStreams: Video[] };
     aiSummary: string;
-    lectorSummary?: string; // New field for the spoken summary
+    lectorSummary?: string;
     startDate: string;
     endDate: string;
     isComparative: boolean;
     channelName: string;
     integratedVideoIds: string[];
     analyzedVideos?: { [videoId: string]: AnalyzedVideo };
+    estimatedRevenue: {
+        longForm: number;
+        shorts: number;
+        liveStreams: number;
+        total: number;
+    };
 }

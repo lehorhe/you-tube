@@ -12,11 +12,12 @@ import QuickNav from './components/QuickNav';
 import HistorySidebar from './components/HistorySidebar';
 import AnalysisProgress from './components/AnalysisProgress';
 import Scoreboard from './components/Scoreboard';
-import { calculateEngagementRate } from './utils';
+import { calculateEngagementRate, estimateRevenue, RPM_LONG_FORM, RPM_SHORTS, RPM_LIVE_STREAM } from './utils';
 import Controls from './components/Controls';
 import MinimizedSidebar from './components/MinimizedSidebar';
 import { ChevronDoubleLeftIcon } from './components/icons';
 import Footer from './components/Footer';
+import PeriodSummaryStats from './components/PeriodSummaryStats';
 
 
 const PREDEFINED_CHANNELS = [
@@ -286,13 +287,35 @@ const App: React.FC = () => {
             let mainChannelForPrompt: Channel;
             let mainVideosForPrompt: { longForm: Video[], shorts: Video[], liveStreams: Video[] };
             let mainPlaylistsForPrompt: Playlist[];
+            let mainRevenueForPrompt: AnalysisResult['estimatedRevenue'];
+
             let competitorChannelForPrompt: Channel | undefined;
             let competitorVideosForPrompt: { longForm: Video[], shorts: Video[], liveStreams: Video[] } | undefined;
             let competitorPlaylistsForPrompt: Playlist[] | undefined;
+            let competitorRevenueForPrompt: AnalysisResult['estimatedRevenue'] | undefined;
 
             let displayChannel: Channel;
             let displayVideos: { longForm: Video[], shorts: Video[], liveStreams: Video[] };
             let displayPlaylists: Playlist[];
+            let displayRevenue: AnalysisResult['estimatedRevenue'];
+            
+            const calculateRevenue = (videoData: { longForm: Video[], shorts: Video[], liveStreams: Video[] }) => {
+                const totalViewsLong = videoData.longForm.reduce((sum, v) => sum + parseInt(v.statistics.viewCount, 10), 0);
+                const totalViewsShorts = videoData.shorts.reduce((sum, v) => sum + parseInt(v.statistics.viewCount, 10), 0);
+                const totalViewsLive = videoData.liveStreams.reduce((sum, v) => sum + parseInt(v.statistics.viewCount, 10), 0);
+
+                const revLong = estimateRevenue(totalViewsLong, RPM_LONG_FORM);
+                const revShorts = estimateRevenue(totalViewsShorts, RPM_SHORTS);
+                const revLive = estimateRevenue(totalViewsLive, RPM_LIVE_STREAM);
+
+                return {
+                    longForm: revLong,
+                    shorts: revShorts,
+                    liveStreams: revLive,
+                    total: revLong + revShorts + revLive
+                };
+            };
+
 
             if (isComparativeAnalysis) {
                 addProgressStep('Analiza porównawcza: Pobieram dane dla kanału Radio Wnet...');
@@ -314,23 +337,29 @@ const App: React.FC = () => {
                 displayChannel = selectedChannel;
                 displayVideos = selectedVideos;
                 displayPlaylists = selectedPlaylists;
+                displayRevenue = calculateRevenue(selectedVideos);
                 
                 mainChannelForPrompt = wnetChannel;
                 mainVideosForPrompt = wnetVideos;
                 mainPlaylistsForPrompt = wnetPlaylists;
+                mainRevenueForPrompt = calculateRevenue(wnetVideos);
+
                 competitorChannelForPrompt = selectedChannel;
                 competitorVideosForPrompt = selectedVideos;
                 competitorPlaylistsForPrompt = selectedPlaylists;
+                competitorRevenueForPrompt = displayRevenue;
             } else {
                 const [selectedChannel, selectedVideos, selectedPlaylists] = await Promise.all([selectedChannelPromise, selectedVideosPromise, selectedPlaylistsPromise]);
                 addProgressStep(`[ OK ] Pobrano dane dla: ${selectedChannel.snippet.title}`);
                 displayChannel = selectedChannel;
                 displayVideos = selectedVideos;
                 displayPlaylists = selectedPlaylists;
+                displayRevenue = calculateRevenue(selectedVideos);
 
                 mainChannelForPrompt = selectedChannel;
                 mainVideosForPrompt = selectedVideos;
                 mainPlaylistsForPrompt = selectedPlaylists;
+                mainRevenueForPrompt = displayRevenue;
             }
             
             addProgressStep('[ OK ] Dane kanału i listy wideo pobrane. Możesz już je przeglądać.');
@@ -351,6 +380,7 @@ const App: React.FC = () => {
                 channelName: displayChannel.snippet.title,
                 integratedVideoIds: [],
                 analyzedVideos: {},
+                estimatedRevenue: displayRevenue,
             };
 
             setAnalysisHistory(prev => [newAnalysisShell, ...prev]);
@@ -381,9 +411,13 @@ const App: React.FC = () => {
                         mainChannelForPrompt,
                         mainVideosForPrompt,
                         mainPlaylistsForPrompt,
+                        startDate,
+                        endDate,
+                        mainRevenueForPrompt,
                         competitorChannelForPrompt,
                         competitorVideosForPrompt,
-                        competitorPlaylistsForPrompt
+                        competitorPlaylistsForPrompt,
+                        competitorRevenueForPrompt
                     );
                     addProgressStep('[ OK ] Model AI zakończył generowanie. Otrzymano odpowiedź.');
                     
@@ -725,6 +759,13 @@ const App: React.FC = () => {
                                         <div className="space-y-12">
                                             
                                             <ChannelHeader channel={currentAnalysis.channelData} />
+                                            
+                                            <PeriodSummaryStats 
+                                                videoData={currentAnalysis.videoData} 
+                                                startDate={currentAnalysis.startDate}
+                                                endDate={currentAnalysis.endDate}
+                                                estimatedRevenue={currentAnalysis.estimatedRevenue}
+                                            />
 
                                             <QuickNav 
                                                 hasVideos={currentAnalysis.videoData.longForm.length > 0}

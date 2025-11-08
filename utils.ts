@@ -1,5 +1,9 @@
 import type { Video } from './types';
 
+export const RPM_LONG_FORM = 10.32; // (10048.85 PLN / 973700 views) * 1000
+export const RPM_SHORTS = 0.27;    // (32.66 PLN / 122500 views) * 1000
+export const RPM_LIVE_STREAM = 16.15; // (626.77 PLN / 38800 views) * 1000
+
 export const formatNumber = (num: number | string): string => {
     const number = typeof num === 'string' ? parseInt(num, 10) : num;
     if (isNaN(number)) return '0';
@@ -8,6 +12,15 @@ export const formatNumber = (num: number | string): string => {
     if (number < 1000000000) return `${(number / 1000000).toFixed(1)}M`;
     return `${(number / 1000000000).toFixed(1)}B`;
 };
+
+export const formatCurrency = (amount: number): string => {
+    return new Intl.NumberFormat('pl-PL', {
+        style: 'currency',
+        currency: 'PLN',
+        minimumFractionDigits: 2,
+    }).format(amount);
+};
+
 
 /**
  * Parses an ISO 8601 duration string (e.g., "PT2M10S") into seconds.
@@ -55,5 +68,16 @@ export const calculateEngagementRate = (video: Video): number => {
     const comments = parseInt(video.statistics.commentCount, 10);
     return ((likes + comments) / views) * 100;
 };
+
+/**
+ * Estimates revenue based on view count and RPM.
+ * @param viewCount The number of views.
+ * @param rpm The revenue per mille (1000 views).
+ * @returns The estimated revenue.
+ */
+export const estimateRevenue = (viewCount: number, rpm: number): number => {
+    return (viewCount / 1000) * rpm;
+};
+
 
 export type { Video };
