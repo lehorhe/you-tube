@@ -1,3 +1,4 @@
+
 import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import type { Channel, Video, Playlist, AnalysisResult, AnalyzedVideo } from './types';
 import { getChannelStats, getChannelVideos, getChannelPlaylists } from './services/youtubeService';
@@ -614,8 +615,9 @@ const App: React.FC = () => {
         const selectedAnalyses = analysisHistory
             .map(analysis => {
                 const isChannelSelected = selectedHistoryIds.has(analysis.id);
+                // FIX: Explicitly type 'v' as AnalyzedVideo to resolve TypeScript error with Object.values.
                 const selectedVideos = Object.values(analysis.analyzedVideos || {})
-                    .filter(v => selectedHistoryIds.has(`${analysis.id}-${v.video.id}`));
+                    .filter((v: AnalyzedVideo) => selectedHistoryIds.has(`${analysis.id}-${v.video.id}`));
 
                 if (!isChannelSelected && selectedVideos.length === 0) {
                     return null;

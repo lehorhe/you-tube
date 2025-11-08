@@ -1,3 +1,4 @@
+
 import React from 'react';
 import type { AnalysisResult, AnalyzedVideo } from '../types';
 import { HistoryIcon, ChannelIcon, CompareIcon, ViewsIcon, LikesIcon, CommentsIcon, EngagementIcon, CalendarIcon, ArrowDownTrayIcon } from './icons';
@@ -115,7 +116,8 @@ const HistorySidebar: React.FC<HistorySidebarProps> = ({ history, currentId, onS
                                 </div>
                                 {analyzedVideos.length > 0 && (
                                     <div className="mt-1 space-y-1 pr-1">
-                                        {analyzedVideos.map(analyzedVideo => (
+                                        {/* FIX: Explicitly type 'analyzedVideo' as AnalyzedVideo to resolve TypeScript errors with Object.values. */}
+                                        {analyzedVideos.map((analyzedVideo: AnalyzedVideo) => (
                                             <VideoHistoryItem
                                                 key={analyzedVideo.video.id}
                                                 video={analyzedVideo.video}
